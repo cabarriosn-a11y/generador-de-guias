@@ -24,6 +24,11 @@ import streamlit as st
 from generadores.guia_aprendizaje import generar_guia_aprendizaje
 from generadores.guia_instructor import generar_guia_instructor
 from generadores.rubricas import generar_rubricas
+from generadores.plan_trabajo import generar_plan_trabajo, calcular_cronograma
+from generadores.excel_portafolio import generar_excel_portafolio
+from generadores.email_sender import (
+    enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
+)
 from generadores.ia import (
     GeminiCliente, GEMINI_DISPONIBLE,
     PROMPTS_DEFAULT, cargar_prompts, guardar_prompts, restablecer_prompt,
@@ -32,7 +37,7 @@ from generadores.ia import (
 
 # ============ CONFIG ============
 st.set_page_config(
-    page_title="Generador Guías SENA — Instructor Sena",
+    page_title="Generador Guías SENA — ProfeNaturales",
     page_icon="📘",
     layout="wide",
 )
@@ -46,6 +51,11 @@ RAPS_FILE = DATA_DIR / "raps_guardados.json"
 GUIAS_FILE = DATA_DIR / "guias_guardadas.json"
 CONFIG_FILE = DATA_DIR / "config.json"
 PROMPTS_FILE = DATA_DIR / "prompts.json"
+
+# Planes de trabajo
+PLANES_DIR = DATA_DIR / "planes_trabajo"
+PLANES_DIR.mkdir(exist_ok=True)
+APRENDICES_FILE = DATA_DIR / "aprendices.json"
 
 
 # ============ RATE LIMITING VISUALES ============
@@ -234,8 +244,9 @@ with st.sidebar:
     st.markdown("---")
     seccion = st.radio(
         "Navegación",
-        ["🆕 Nueva guía", "🤖 Configurar IA", "🎨 Prompts de la IA",
-         "⚙️ Cargar competencias",
+        ["🆕 Nueva guía", "📋 Planes de Trabajo",
+         "🤖 Configurar IA", "✉️ Configurar correo",
+         "🎨 Prompts de la IA", "⚙️ Cargar competencias",
          "💾 Guías guardadas", "📚 RAPs guardados", "ℹ️ Ayuda"],
         label_visibility="collapsed",
     )
@@ -899,6 +910,506 @@ def seccion_raps():
                 st.rerun()
 
 
+# ============ SECCIÓN: CONFIGURAR CORREO (SMTP) ============
+def seccion_configurar_correo():
+    st.header("✉️ Configurar correo (Gmail)")
+
+    st.markdown("""
+Para que la app pueda enviar correos a los aprendices, necesita usar tu cuenta de Gmail.
+
+### 🔐 Paso 1: Activar Verificación en 2 pasos
+1. Ve a **[myaccount.google.com/security](https://myaccount.google.com/security)**
+2. Activa **"Verificación en 2 pasos"** si aún no la tienes
+   (es requisito de Google para poder crear contraseñas de aplicación)
+
+### 🔑 Paso 2: Crear contraseña de aplicación
+1. Ve a **[myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)**
+2. En "Nombre de la app" escribe: **Generador Guías SENA**
+3. Click en **Crear**
+4. Google te muestra una contraseña de **16 caracteres** (ej: `abcd efgh ijkl mnop`)
+5. Cópiala tal cual y pégala abajo
+
+**Importante:** esa contraseña de 16 caracteres NO es tu contraseña de Gmail normal. Es una contraseña especial solo para esta app.
+""")
+
+    cfg = cargar_config()
+    with st.form("form_correo"):
+        remitente = st.text_input("Tu correo Gmail",
+                                   value=cfg.get("smtp_remitente", ""),
+                                   placeholder="cabarriosn@gmail.com")
+        contrasena = st.text_input("Contraseña de aplicación (16 caracteres)",
+                                    value=cfg.get("smtp_contrasena", ""),
+                                    type="password",
+                                    placeholder="abcd efgh ijkl mnop")
+        nombre_remitente = st.text_input("Tu nombre (cómo aparecerá en el correo)",
+                                          value=cfg.get("smtp_nombre",
+                                                        cfg.get("autor_default", "Instructor SENA")))
+
+        col1, col2 = st.columns(2)
+        with col1:
+            guardar_btn = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
+        with col2:
+            probar_btn = st.form_submit_button("🧪 Probar conexión", use_container_width=True)
+
+    if guardar_btn:
+        cfg["smtp_remitente"] = remitente.strip()
+        cfg["smtp_contrasena"] = contrasena.strip()
+        cfg["smtp_nombre"] = nombre_remitente.strip()
+        guardar_config(cfg)
+        st.success("✅ Configuración de correo guardada.")
+
+    if probar_btn:
+        if not remitente or not contrasena:
+            st.error("Ingresa correo y contraseña primero.")
+        else:
+            with st.spinner("Probando conexión..."):
+                ok, mensaje = probar_conexion(remitente.strip(), contrasena.strip())
+            if ok:
+                st.success(f"✅ {mensaje}")
+            else:
+                st.error(f"❌ {mensaje}")
+
+
+# ============ SECCIÓN: PLANES DE TRABAJO ============
+def seccion_planes_trabajo():
+    st.header("📋 Planes de Trabajo Individuales")
+    st.caption("Genera un PDF personalizado para cada aprendiz y envíalo por correo.")
+
+    tabs = st.tabs(["1️⃣ Aprendices", "2️⃣ Guía y cronograma", "3️⃣ Generar y enviar"])
+
+    # ---- TAB 1: Cargar aprendices ----
+    with tabs[0]:
+        _tab_aprendices()
+
+    # ---- TAB 2: Seleccionar guía y cronograma ----
+    with tabs[1]:
+        _tab_guia_cronograma()
+
+    # ---- TAB 3: Generar y enviar ----
+    with tabs[2]:
+        _tab_generar_enviar()
+
+
+def _tab_aprendices():
+    st.subheader("Cargar lista de aprendices")
+
+    with st.expander("📋 ¿Cómo debe estar mi Excel de aprendices?", expanded=True):
+        st.markdown("""
+El Excel debe tener **una fila por aprendiz** con estas columnas:
+
+| Nombre | Apellidos | Correo | Ficha | Programa |
+|--------|-----------|--------|-------|----------|
+| Juan Camilo | Pérez Rodríguez | juan@correo.com | 3125874 | Técnico en Logística |
+
+**Notas:**
+- Los nombres de columnas no importan — te dejamos mapearlas.
+- Si tienes una sola columna "Nombre completo", también se puede.
+- Puedes filtrar por ficha después.
+        """)
+        # Botón de descarga de plantilla
+        st.download_button(
+            "⬇️ Descargar plantilla Excel de aprendices",
+            data=_excel_plantilla_aprendices(),
+            file_name="plantilla_aprendices.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    archivo = st.file_uploader("Sube tu Excel de aprendices (.xlsx)",
+                                type=["xlsx"], key="upload_aprendices")
+    if archivo:
+        try:
+            hojas = leer_excel_bytes(archivo.getvalue())
+            hoja = st.selectbox("Hoja", list(hojas.keys()), key="hoja_apr")
+            df = hojas[hoja]
+            st.dataframe(df.head(10), use_container_width=True)
+
+            st.subheader("Mapeo de columnas")
+            cols = [""] + list(df.columns)
+
+            def _default(nombres):
+                for n in nombres:
+                    for c in cols:
+                        if str(c).strip().lower() == n.lower():
+                            return cols.index(c)
+                return 0
+
+            c1, c2 = st.columns(2)
+            with c1:
+                col_nombre = st.selectbox("Columna → Nombre(s)", cols,
+                                           index=_default(["Nombre", "Nombres", "Nombre completo"]),
+                                           key="col_nom")
+                col_apellidos = st.selectbox("Columna → Apellidos (opcional si Nombre trae ambos)",
+                                              cols,
+                                              index=_default(["Apellidos", "Apellido"]),
+                                              key="col_ap")
+                col_correo = st.selectbox("Columna → Correo",
+                                           cols,
+                                           index=_default(["Correo", "Email", "E-mail", "Correo electrónico"]),
+                                           key="col_cor")
+            with c2:
+                col_ficha = st.selectbox("Columna → Ficha",
+                                          cols,
+                                          index=_default(["Ficha", "Numero de ficha", "Número de ficha", "N° Ficha"]),
+                                          key="col_fic")
+                col_programa = st.selectbox("Columna → Programa (opcional)",
+                                             cols,
+                                             index=_default(["Programa", "Programa de formación"]),
+                                             key="col_prog_apr")
+
+            if col_nombre and col_correo and col_ficha:
+                # Extraer aprendices
+                aprendices = []
+                for _, row in df.iterrows():
+                    nombre = str(row[col_nombre]) if pd.notna(row[col_nombre]) else ""
+                    apellidos = str(row[col_apellidos]) if col_apellidos and pd.notna(row.get(col_apellidos)) else ""
+                    correo = str(row[col_correo]) if pd.notna(row[col_correo]) else ""
+                    ficha = str(row[col_ficha]) if pd.notna(row[col_ficha]) else ""
+                    programa = str(row[col_programa]) if col_programa and pd.notna(row.get(col_programa)) else ""
+                    if nombre and correo:
+                        aprendices.append({
+                            "nombre": nombre.strip(),
+                            "apellidos": apellidos.strip(),
+                            "correo": correo.strip(),
+                            "ficha": ficha.strip(),
+                            "programa": programa.strip(),
+                        })
+
+                st.success(f"✅ Detecté {len(aprendices)} aprendice(s) válidos.")
+
+                # Filtrar por ficha
+                fichas_disponibles = sorted(set(a["ficha"] for a in aprendices if a["ficha"]))
+                fichas_seleccionadas = st.multiselect(
+                    "Filtrar por ficha (deja vacío para incluir todas)",
+                    fichas_disponibles,
+                    default=[],
+                )
+                if fichas_seleccionadas:
+                    aprendices = [a for a in aprendices if a["ficha"] in fichas_seleccionadas]
+
+                st.session_state.aprendices_cargados = aprendices
+                guardar_json(APRENDICES_FILE, aprendices)
+                st.info(f"📌 {len(aprendices)} aprendices listos para el plan de trabajo.")
+        except Exception as e:
+            st.error(f"Error al leer Excel: {e}")
+
+    # Mostrar aprendices cargados
+    if st.session_state.get("aprendices_cargados"):
+        aprendices = st.session_state.aprendices_cargados
+        st.markdown(f"### Aprendices cargados: {len(aprendices)}")
+        st.dataframe(pd.DataFrame(aprendices), use_container_width=True)
+
+
+def _tab_guia_cronograma():
+    st.subheader("Selecciona la guía y define el cronograma")
+
+    guias = cargar_guias_historial()
+    if not guias:
+        st.warning("⚠️ Primero genera al menos una guía en **🆕 Nueva guía**.")
+        return
+
+    # Selector de guía
+    opciones_guias = []
+    for i, g in enumerate(reversed(guias)):
+        opciones_guias.append(f"{g.get('fecha', '')} · {g.get('programa', '')[:50]}")
+
+    idx = st.selectbox("Guía a asignar", range(len(opciones_guias)),
+                        format_func=lambda i: opciones_guias[i])
+    guia_seleccionada = list(reversed(guias))[idx]
+    st.session_state.plan_guia = guia_seleccionada
+
+    st.markdown(f"**Competencia:** {guia_seleccionada.get('competencia', '')}")
+    st.markdown(f"**Fase:** {guia_seleccionada.get('fase', '')}")
+
+    # Cronograma
+    st.subheader("Cronograma de entrega")
+    col1, col2 = st.columns(2)
+    with col1:
+        fecha_inicio = st.date_input("Fecha de inicio de las actividades",
+                                     value=date.today(), key="plan_fecha_inicio")
+    with col2:
+        horas_dia = st.number_input("Horas efectivas por día del aprendiz",
+                                     min_value=0.5, max_value=8.0, value=2.0, step=0.5,
+                                     help="Sirve para estimar días hábiles entre entregas")
+
+    # Necesitamos las actividades de la guía. Como el historial no las guarda,
+    # vamos a permitir editar la duración de cada actividad manualmente aquí.
+    st.markdown("**Duración de cada actividad (horas):**")
+    actividades_input = {}
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        actividades_input["3.1"] = {
+            "duracion": f"{st.number_input('Act. 3.1', 0.5, 10.0, 1.0, 0.5, key='dur_apr_31')} h",
+            "descripcion": st.text_area("Descripción 3.1", height=80, key="desc_apr_31",
+                                         value="Reflexión inicial sobre la situación real."),
+        }
+    with c2:
+        actividades_input["3.2"] = {
+            "duracion": f"{st.number_input('Act. 3.2', 0.5, 10.0, 1.0, 0.5, key='dur_apr_32')} h",
+            "descripcion": st.text_area("Descripción 3.2", height=80, key="desc_apr_32",
+                                         value="Contextualización con el concepto clave."),
+        }
+    with c3:
+        actividades_input["3.3"] = {
+            "duracion": f"{st.number_input('Act. 3.3', 0.5, 10.0, 4.0, 0.5, key='dur_apr_33')} h",
+            "descripcion": st.text_area("Descripción 3.3", height=80, key="desc_apr_33",
+                                         value="Apropiación mediante ejercicios prácticos."),
+        }
+    with c4:
+        actividades_input["3.4"] = {
+            "duracion": f"{st.number_input('Act. 3.4', 0.5, 10.0, 2.0, 0.5, key='dur_apr_34')} h",
+            "descripcion": st.text_area("Descripción 3.4", height=80, key="desc_apr_34",
+                                         value="Transferencia mediante evidencia individual."),
+        }
+
+    # Calcular preview del cronograma
+    if st.button("🔍 Vista previa del cronograma", use_container_width=True):
+        crono = calcular_cronograma(actividades_input, fecha_inicio, horas_dia)
+        df_preview = pd.DataFrame([
+            {
+                "Actividad": c["titulo"],
+                "Horas": c["horas"],
+                "Inicio": c["fecha_inicio"].strftime("%d/%m/%Y (%A)"),
+                "Entrega": c["fecha_entrega"].strftime("%d/%m/%Y (%A)"),
+            }
+            for c in crono
+        ])
+        st.dataframe(df_preview, use_container_width=True)
+
+    # Guardar en session_state
+    st.session_state.plan_actividades = actividades_input
+    st.session_state.plan_fecha_inicio_val = fecha_inicio
+    st.session_state.plan_horas_dia = horas_dia
+
+
+def _tab_generar_enviar():
+    st.subheader("Generar PDFs y enviar por correo")
+
+    if not st.session_state.get("aprendices_cargados"):
+        st.warning("⚠️ Primero carga los aprendices en la pestaña 1️⃣.")
+        return
+    if not st.session_state.get("plan_guia"):
+        st.warning("⚠️ Primero selecciona una guía en la pestaña 2️⃣.")
+        return
+
+    aprendices = st.session_state.aprendices_cargados
+    guia = st.session_state.plan_guia
+    actividades = st.session_state.get("plan_actividades", {})
+    fecha_inicio = st.session_state.get("plan_fecha_inicio_val", date.today())
+    horas_dia = st.session_state.get("plan_horas_dia", 2.0)
+
+    cfg = cargar_config()
+    correo_configurado = bool(cfg.get("smtp_remitente") and cfg.get("smtp_contrasena"))
+
+    # Info
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Aprendices", len(aprendices))
+    col2.metric("Guía", guia.get("fase", ""))
+    col3.metric("Correo listo", "✅ Sí" if correo_configurado else "❌ No")
+
+    if not correo_configurado:
+        st.warning("Para enviar correos, configúralo primero en **✉️ Configurar correo**. "
+                   "Igual puedes generar los PDFs y bajarlos.")
+
+    st.markdown("---")
+
+    modo = st.radio("¿Qué quieres hacer?",
+                    ["📄 Solo generar los PDFs (para descargar/enviar manual)",
+                     "📄+✉️ Generar PDFs y enviar automáticamente por correo"],
+                    disabled=not correo_configurado if False else False)
+
+    enviar = "enviar" in modo
+    if enviar and not correo_configurado:
+        st.error("No puedes enviar sin configurar el correo primero.")
+        return
+
+    # Filtro final: elegir a quiénes se genera/envía
+    nombres_completos = [f"{a['nombre']} {a['apellidos']}".strip() for a in aprendices]
+    seleccionados_idx = st.multiselect(
+        "Aprendices a incluir (deja vacío para TODOS)",
+        range(len(aprendices)),
+        format_func=lambda i: f"{nombres_completos[i]} · {aprendices[i]['correo']} · Ficha {aprendices[i]['ficha']}",
+    )
+    if not seleccionados_idx:
+        seleccionados_idx = list(range(len(aprendices)))
+
+    aprendices_a_procesar = [aprendices[i] for i in seleccionados_idx]
+
+    st.markdown("---")
+
+    if st.button(f"🚀 Procesar {len(aprendices_a_procesar)} aprendices",
+                 type="primary", use_container_width=True):
+        _procesar_planes(aprendices_a_procesar, guia, actividades, fecha_inicio,
+                         horas_dia, enviar, cfg)
+
+    # Mostrar resultados si existen
+    if st.session_state.get("planes_generados"):
+        st.markdown("---")
+        st.subheader("📄 Resultados")
+        _mostrar_resultados_planes()
+
+
+def _procesar_planes(aprendices, guia, actividades, fecha_inicio, horas_dia, enviar, cfg):
+    """Genera un PDF por aprendiz, envía correo si aplica, y consolida en Excel."""
+    from datetime import datetime as dt
+
+    datos_guia = {
+        "programa": guia.get("programa", ""),
+        "competencia": guia.get("competencia", ""),
+        "proyecto_formativo": guia.get("proyecto_formativo", ""),
+        "fase_proyecto": guia.get("fase", ""),
+    }
+    instructor = {
+        "nombre": cfg.get("autor_default", "Instructor SENA"),
+        "cargo": "Instructor",
+    }
+
+    barra_progreso = st.progress(0.0)
+    log_placeholder = st.empty()
+    log = []
+
+    cronograma = calcular_cronograma(actividades, fecha_inicio, horas_dia)
+
+    planes_generados = []
+    total = len(aprendices)
+    exitosos = 0
+    fallidos_correo = 0
+
+    for i, apr in enumerate(aprendices, start=1):
+        try:
+            nombre_completo = f"{apr['nombre']} {apr['apellidos']}".strip()
+            safe_name = re.sub(r"[^\w]", "_", nombre_completo)[:40]
+            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+            ruta_pdf = str(PLANES_DIR / f"Plan_{safe_name}_{apr['ficha']}_{timestamp}.pdf")
+
+            # 1. Generar PDF
+            generar_plan_trabajo(apr, datos_guia, cronograma, instructor, ruta_pdf)
+            log.append(f"✅ PDF generado: {nombre_completo}")
+
+            # 2. Enviar correo si aplica
+            correo_enviado = False
+            fecha_envio = ""
+            error_envio = ""
+            if enviar:
+                try:
+                    cuerpo = plantilla_correo_plan_trabajo(
+                        nombre_completo, instructor["nombre"],
+                        datos_guia["programa"], datos_guia["competencia"]
+                    )
+                    enviar_correo(
+                        remitente=cfg["smtp_remitente"],
+                        contrasena_app=cfg["smtp_contrasena"],
+                        destinatario=apr["correo"],
+                        asunto=f"Plan de Trabajo — {datos_guia['competencia'][:60]}",
+                        cuerpo_html=cuerpo,
+                        adjuntos=[ruta_pdf],
+                        nombre_remitente=cfg.get("smtp_nombre", instructor["nombre"]),
+                    )
+                    correo_enviado = True
+                    fecha_envio = dt.now().strftime("%d/%m/%Y %H:%M")
+                    log.append(f"✉️ Correo enviado a: {apr['correo']}")
+                except Exception as e:
+                    fallidos_correo += 1
+                    error_envio = str(e)
+                    log.append(f"❌ Error correo {apr['correo']}: {e}")
+
+            planes_generados.append({
+                "datos_aprendiz": apr,
+                "cronograma": cronograma,
+                "archivo_pdf": ruta_pdf,
+                "correo_enviado": correo_enviado,
+                "fecha_envio": fecha_envio,
+                "error_envio": error_envio,
+            })
+            exitosos += 1
+
+        except Exception as e:
+            log.append(f"❌ Error con {apr.get('nombre', '?')}: {e}")
+
+        barra_progreso.progress(i / total)
+        log_placeholder.text("\n".join(log[-8:]))
+
+    # Consolidar Excel del portafolio
+    timestamp_final = dt.now().strftime("%Y%m%d_%H%M%S")
+    ruta_excel = str(PLANES_DIR / f"Portafolio_planes_{timestamp_final}.xlsx")
+    try:
+        generar_excel_portafolio(planes_generados, datos_guia, instructor, ruta_excel)
+        log.append(f"📊 Excel consolidado generado.")
+    except Exception as e:
+        log.append(f"❌ Error generando Excel: {e}")
+        ruta_excel = None
+
+    log_placeholder.text("\n".join(log[-15:]))
+
+    st.session_state.planes_generados = {
+        "planes": planes_generados,
+        "excel": ruta_excel,
+        "exitosos": exitosos,
+        "fallidos_correo": fallidos_correo,
+        "enviado": enviar,
+    }
+
+    st.success(f"✅ {exitosos}/{total} planes generados. "
+               f"{'Correos enviados: ' + str(exitosos - fallidos_correo) if enviar else ''}")
+
+
+def _mostrar_resultados_planes():
+    resultado = st.session_state.planes_generados
+
+    # Botón para descargar Excel consolidado
+    if resultado.get("excel") and Path(resultado["excel"]).exists():
+        st.markdown("### 📊 Excel consolidado (para tu portafolio)")
+        with open(resultado["excel"], "rb") as f:
+            st.download_button(
+                "⬇️ Descargar Excel consolidado",
+                f.read(),
+                file_name=Path(resultado["excel"]).name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    st.markdown(f"### 📄 PDFs generados ({len(resultado['planes'])})")
+    for i, plan in enumerate(resultado["planes"]):
+        apr = plan["datos_aprendiz"]
+        nombre = f"{apr['nombre']} {apr['apellidos']}".strip()
+        etiqueta_correo = "✅ Enviado" if plan["correo_enviado"] else \
+                           ("⏳ Pendiente" if not resultado.get("enviado") else "❌ Falló")
+        with st.expander(f"{nombre} · Ficha {apr['ficha']} · {etiqueta_correo}"):
+            st.write(f"**Correo:** {apr['correo']}")
+            if plan.get("fecha_envio"):
+                st.write(f"**Enviado:** {plan['fecha_envio']}")
+            if plan.get("error_envio"):
+                st.error(f"Error: {plan['error_envio']}")
+            if Path(plan["archivo_pdf"]).exists():
+                with open(plan["archivo_pdf"], "rb") as f:
+                    st.download_button(
+                        "⬇️ Descargar PDF",
+                        f.read(),
+                        file_name=Path(plan["archivo_pdf"]).name,
+                        mime="application/pdf",
+                        key=f"dl_plan_{i}",
+                    )
+
+
+def _excel_plantilla_aprendices() -> bytes:
+    """Genera un Excel de plantilla para el listado de aprendices."""
+    df = pd.DataFrame({
+        "Nombre": ["Juan Camilo", "María Fernanda", "Andrés Felipe"],
+        "Apellidos": ["Pérez Rodríguez", "Gómez Torres", "Ramírez Blanco"],
+        "Correo": ["juan.perez@correo.com", "maria.gomez@correo.com", "andres.ramirez@correo.com"],
+        "Ficha": ["3125874", "3125874", "3125875"],
+        "Programa": [
+            "Técnico en Integración de Operaciones Logísticas",
+            "Técnico en Integración de Operaciones Logísticas",
+            "Técnico en Integración de Operaciones Logísticas",
+        ],
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Aprendices", index=False)
+    return buf.getvalue()
+
+
 # ============ SECCIÓN: CONFIGURAR IA ============
 def seccion_configurar_ia():
     st.header("🤖 Configurar IA (Gemini)")
@@ -1065,8 +1576,12 @@ def _armar_tabla_evidencias(actividades, fase):
 # ============ ROUTER ============
 if seccion == "🆕 Nueva guía":
     seccion_nueva_guia()
+elif seccion == "📋 Planes de Trabajo":
+    seccion_planes_trabajo()
 elif seccion == "🤖 Configurar IA":
     seccion_configurar_ia()
+elif seccion == "✉️ Configurar correo":
+    seccion_configurar_correo()
 elif seccion == "🎨 Prompts de la IA":
     seccion_prompts()
 elif seccion == "⚙️ Cargar competencias":
