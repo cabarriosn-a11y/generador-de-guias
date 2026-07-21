@@ -95,6 +95,46 @@ def calcular_cronograma(actividades: dict, fecha_inicio: date, horas_por_dia: fl
     return resultado
 
 
+def calcular_cronograma_por_rango(actividades: dict, fecha_inicio: date, fecha_final: date) -> list:
+    """Asigna la MISMA fecha_inicio y fecha_final a todas las actividades.
+    Útil cuando el instructor define el rango completo de la etapa lectiva.
+
+    Retorna: lista de dicts con la misma estructura que calcular_cronograma().
+    """
+    titulos = {
+        "3.1": "Actividad 3.1 · Reflexión inicial",
+        "3.2": "Actividad 3.2 · Contextualización",
+        "3.3": "Actividad 3.3 · Apropiación",
+        "3.4": "Actividad 3.4 · Transferencia",
+    }
+    resultado = []
+    for key in ["3.1", "3.2", "3.3", "3.4"]:
+        act = actividades.get(key, {})
+        desc = act.get("descripcion", "")
+        resultado.append({
+            "numero": key,
+            "titulo": titulos.get(key, key),
+            "descripcion": desc[:180] + ("..." if len(desc) > 180 else ""),
+            "horas": 0,  # ya no aplica en este modo
+            "fecha_inicio": fecha_inicio,
+            "fecha_entrega": fecha_final,
+        })
+    return resultado
+
+
+def contar_dias_habiles(inicio: date, fin: date) -> int:
+    """Cuenta los días hábiles (lunes a viernes) entre dos fechas, inclusive."""
+    if fin < inicio:
+        return 0
+    dias = 0
+    actual = inicio
+    while actual <= fin:
+        if actual.weekday() < 5:  # 0-4 = lunes a viernes
+            dias += 1
+        actual += timedelta(days=1)
+    return dias
+
+
 def _sumar_dias_habiles(desde: date, dias: int) -> date:
     """Suma días hábiles (excluye sábados y domingos)."""
     resultado = desde
@@ -196,8 +236,12 @@ def generar_plan_trabajo(datos_aprendiz: dict, datos_guia: dict, cronograma: lis
     encabezados = ["Actividad", "Descripción", "Inicio", "Entrega", "Entregado"]
     filas = [encabezados]
     for act in cronograma:
+        # Si no hay horas definidas (modo por rango de fechas), omitir "(X h)"
+        titulo_display = f"<b>{act['titulo']}</b>"
+        if act.get("horas", 0) > 0:
+            titulo_display += f"<br/>({act['horas']:.0f} h)"
         filas.append([
-            Paragraph(f"<b>{act['titulo']}</b><br/>({act['horas']:.0f} h)", st_cell),
+            Paragraph(titulo_display, st_cell),
             Paragraph(act["descripcion"], st_cell),
             act["fecha_inicio"].strftime("%d/%m/%Y"),
             act["fecha_entrega"].strftime("%d/%m/%Y"),
