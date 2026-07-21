@@ -1818,11 +1818,17 @@ def seccion_planeacion_pedagogica():
                     value=int(fila.get("horas_independientes", 48)), key=f"pln_hi_{i}")
 
             if cli_ia:
-                if st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
-                              key=f"pln_ia_{i}", use_container_width=True):
-                    with st.spinner("La IA está diseñando los campos técnicos..."):
+                col_btn_ia, col_dbg = st.columns([2, 1])
+                with col_btn_ia:
+                    btn_ia = st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
+                                        key=f"pln_ia_{i}", use_container_width=True)
+                with col_dbg:
+                    ver_debug = st.checkbox("🔍 Ver debug", key=f"pln_debug_{i}", value=False)
+
+                if btn_ia:
+                    with st.spinner("La IA está diseñando los campos técnicos... (~15 segundos)"):
                         try:
-                            # Buscar guías previamente generadas para esta competencia (alineación)
+                            # Buscar guías previas para alineación
                             guias_relacionadas = _buscar_guias_de_competencia(competencia)
 
                             datos_ia = {
@@ -1835,30 +1841,46 @@ def seccion_planeacion_pedagogica():
                             }
                             resultado = cli_ia.generar_planeacion(datos_ia)
 
-                            # Actualizar los datos de la fila en session_state.planeacion_filas
-                            # (NO modificar directamente st.session_state[widget_key] porque
-                            # los widgets ya fueron instanciados en esta ejecución)
+                            # Guardar la respuesta cruda para debug
+                            st.session_state[f"pln_ultimo_resultado_{i}"] = {
+                                "resultado": resultado,
+                                "guias_usadas": len(guias_relacionadas),
+                                "competencia": competencia[:80],
+                            }
+
+                            # Aplicar los valores al dict de la fila
                             fila_actual = st.session_state.planeacion_filas[i]
                             campos_ia = ("saberes_conceptos", "saberes_proceso",
                                          "criterios_evaluacion", "actividades_aprendizaje",
                                          "descripcion_evidencia", "estrategias_didacticas",
                                          "ambiente", "materiales")
-                            for k in campos_ia:
-                                if k in resultado:
-                                    fila_actual[k] = str(resultado[k])
-                            if "horas_directas" in resultado:
-                                try:
-                                    fila_actual["horas_directas"] = int(resultado["horas_directas"])
-                                except (ValueError, TypeError):
-                                    pass
-                            if "horas_independientes" in resultado:
-                                try:
-                                    fila_actual["horas_independientes"] = int(resultado["horas_independientes"])
-                                except (ValueError, TypeError):
-                                    pass
+                            aplicados = []
+                            no_aplicados = []
+                            if isinstance(resultado, dict):
+                                for k in campos_ia:
+                                    valor = resultado.get(k, "")
+                                    if valor:  # solo aplicar si tiene contenido
+                                        fila_actual[k] = str(valor).strip()
+                                        aplicados.append(k)
+                                    else:
+                                        no_aplicados.append(k)
+                                # Horas
+                                for hkey, jkey in [("horas_directas", "horas_directas"),
+                                                    ("horas_independientes", "horas_independientes")]:
+                                    v = resultado.get(jkey)
+                                    if v not in (None, ""):
+                                        try:
+                                            fila_actual[hkey] = int(v)
+                                            aplicados.append(hkey)
+                                        except (ValueError, TypeError):
+                                            no_aplicados.append(hkey)
+                            else:
+                                no_aplicados = list(campos_ia)
 
-                            # Limpiar las session_state keys de los widgets de esta fila para que
-                            # en el próximo rerun se recreen con los valores nuevos del fila_actual
+                            st.session_state[f"pln_ultimo_resultado_{i}"]["aplicados"] = aplicados
+                            st.session_state[f"pln_ultimo_resultado_{i}"]["no_aplicados"] = no_aplicados
+
+                            # Limpiar session_state keys de widgets para forzar re-render con valores nuevos
                             keys_widgets = [
                                 f"pln_hd_{i}", f"pln_hi_{i}",
                                 f"pln_saberes_conceptos_{i}", f"pln_saberes_proceso_{i}",
@@ -1871,13 +1893,45 @@ def seccion_planeacion_pedagogica():
                             for kw in keys_widgets:
                                 st.session_state.pop(kw, None)
 
-                            mensaje = "✅ Campos generados por IA."
-                            if guias_relacionadas:
-                                mensaje += f" (Se usaron {len(guias_relacionadas)} guía(s) previa(s) como contexto)."
-                            st.success(mensaje)
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            import traceback
+                            st.error(f"❌ Error al llamar la IA: {e}")
+                            st.session_state[f"pln_ultimo_resultado_{i}"] = {
+                                "error": str(e),
+                                "traceback": traceback.format_exc(),
+                            }
+
+                # Mostrar resultado de la última llamada (después del rerun)
+                if f"pln_ultimo_resultado_{i}" in st.session_state:
+                    ultimo = st.session_state[f"pln_ultimo_resultado_{i}"]
+                    if "error" in ultimo:
+                        with st.expander("❌ Error de la IA - Ver detalles"):
+                            st.error(ultimo["error"])
+                            st.code(ultimo.get("traceback", ""), language="python")
+                    else:
+                        aplicados = ultimo.get("aplicados", [])
+                        no_aplicados = ultimo.get("no_aplicados", [])
+                        if aplicados:
+                            msg = f"✅ IA aplicó {len(aplicados)} campo(s)"
+                            if ultimo.get("guias_usadas", 0) > 0:
+                                msg += f" (con {ultimo['guias_usadas']} guía(s) previa(s) como contexto)"
+                            st.success(msg)
+                        if no_aplicados:
+                            st.warning(f"⚠️ La IA no devolvió estos campos (o venían vacíos): "
+                                       f"{', '.join(no_aplicados)}")
+
+                    if ver_debug:
+                        with st.expander("🔍 Respuesta cruda de la IA (debug)", expanded=True):
+                            resultado = ultimo.get("resultado")
+                            if resultado is not None:
+                                if isinstance(resultado, dict):
+                                    st.json(resultado)
+                                else:
+                                    st.code(str(resultado)[:2000])
+                                    st.warning(f"Tipo recibido: {type(resultado).__name__} (esperaba dict)")
+                            st.markdown(f"**Aplicados:** {ultimo.get('aplicados', [])}")
+                            st.markdown(f"**No aplicados:** {ultimo.get('no_aplicados', [])}")
 
             c3, c4 = st.columns(2)
             with c3:
