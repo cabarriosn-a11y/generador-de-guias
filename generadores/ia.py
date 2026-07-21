@@ -300,6 +300,8 @@ class GeminiCliente:
     def generar_planeacion(self, datos: dict, instrucciones_extra: str = "") -> dict:
         """Genera los campos técnicos de UNA fila de la planeación pedagógica.
         Recibe: programa, fase, proyecto_formativo, actividad_proyecto, competencia, raps.
+        Opcionalmente: guias_relacionadas (list) - guías ya generadas para esta competencia,
+                       para alinear las "actividades_aprendizaje" con lo que ya existe.
         Devuelve dict con: saberes_conceptos, saberes_proceso, criterios_evaluacion,
                           actividades_aprendizaje, descripcion_evidencia, estrategias_didacticas,
                           ambiente, materiales, horas_directas, horas_independientes.
@@ -312,6 +314,27 @@ class GeminiCliente:
             competencia=datos.get("competencia", ""),
             raps_formateados=self._formatear_raps(datos.get("raps", [])),
         )
+
+        # Alineación con guías de aprendizaje ya generadas (si hay)
+        guias_prev = datos.get("guias_relacionadas", [])
+        if guias_prev:
+            contexto_guias = "\n\nCONTEXTO ADICIONAL — GUÍAS DE APRENDIZAJE YA GENERADAS PARA ESTA COMPETENCIA:\n"
+            contexto_guias += ("El instructor ya ha diseñado las siguientes guías de aprendizaje "
+                               "para esta competencia. Las 'actividades_aprendizaje' y las "
+                               "'evidencias' que generes DEBEN estar alineadas con estas guías, "
+                               "haciendo referencia a las actividades 3.1 (Reflexión), 3.2 "
+                               "(Contextualización), 3.3 (Apropiación) y 3.4 (Transferencia) "
+                               "que están en cada guía.\n\n")
+            for i, g in enumerate(guias_prev, 1):
+                contexto_guias += (f"Guía {i}: fase='{g.get('fase', '')}', "
+                                   f"RAP focal='{g.get('rap_focal', '')}', "
+                                   f"fecha={g.get('fecha', '')}\n")
+            contexto_guias += ("\nEn 'actividades_aprendizaje' menciona explícitamente las "
+                               "actividades 3.1/3.2/3.3/3.4 de las guías. En 'descripcion_evidencia' "
+                               "referencia las evidencias que producen esas guías (guía autónoma "
+                               "resuelta, quiz, video experimental, propuesta de mejora).")
+            prompt += contexto_guias
+
         prompt = self._aplicar_extra(prompt, instrucciones_extra)
         respuesta = self._llamar(prompt)
         return self._parsear_json(respuesta)
