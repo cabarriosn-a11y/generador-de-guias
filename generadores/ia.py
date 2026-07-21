@@ -130,35 +130,40 @@ Formato APA simplificado."""
 
 
 # NUEVO: Prompt para planeación pedagógica (formato GFPI-F-134)
-PROMPT_PLANEACION_DEFAULT = """Diseña los campos técnicos de la PLANEACIÓN PEDAGÓGICA (formato GFPI-F-134 del SENA) para esta competencia.
+PROMPT_PLANEACION_DEFAULT = """Eres un experto en pedagogía SENA. Diseña los campos técnicos de UNA fila de la PLANEACIÓN PEDAGÓGICA (formato oficial GFPI-F-134) para la competencia indicada, en el contexto del proyecto formativo dado.
 
-Programa: {programa}
-Fase del proyecto: {fase}
-Proyecto formativo: {proyecto_formativo}
-Actividad de proyecto formativo: {actividad_proyecto}
-Competencia: {competencia}
-Resultados de aprendizaje:
+DATOS DE ENTRADA:
+- Programa: {programa}
+- Fase del proyecto: {fase}
+- Proyecto formativo: {proyecto_formativo}
+- Actividad del proyecto formativo: {actividad_proyecto}
+- Competencia: {competencia}
+- Resultados de aprendizaje asociados:
 {raps_formateados}
 
-Responde ÚNICAMENTE en JSON válido (sin markdown, sin ```json):
+TAREA CRÍTICA: Responde ÚNICAMENTE con un objeto JSON válido. Sin markdown, sin ```json, sin explicaciones antes ni después. Solo el objeto JSON.
+
+FORMATO EXACTO DEL JSON A DEVOLVER (todos los campos son OBLIGATORIOS y deben tener contenido concreto, NUNCA vacíos):
+
 {{
-  "saberes_conceptos": "Conceptos y principios que el aprendiz DEBE saber. Lista breve separada por comas.",
-  "saberes_proceso": "Habilidades y procesos que el aprendiz DEBE saber HACER. Lista breve separada por comas.",
-  "criterios_evaluacion": "Criterios que se usarán para evaluar el aprendizaje. Cada criterio empieza con verbo en tercera persona (identifica, calcula, propone, verifica...). Deben ser CONCRETOS Y MEDIBLES en el contexto del proyecto formativo.",
-  "actividades_aprendizaje": "Nombre de las actividades de aprendizaje asociadas a esta competencia (ej: 'Guía S1 RA-01: Leyes de Newton en Cerrejón, Quiz VF, Simulador PhET, Video experimental').",
-  "descripcion_evidencia": "Descripción concreta de las evidencias que produce el aprendiz (ej: 'Guía autónoma resuelta, quiz completado con puntaje mínimo, video experimental de 3-5 min, propuesta escrita de mejora').",
-  "estrategias_didacticas": "Estrategias didácticas activas a usar. Lista corta (ej: 'ABP, simulación, aprendizaje experiencial, exposición dialogada').",
-  "ambiente": "Ambiente físico requerido (ej: 'Aula de sistemas con conexión a internet').",
-  "materiales": "Materiales de formación necesarios (ej: 'Computadores, video beam, calculadora, simulador PhET').",
+  "saberes_conceptos": "3-5 conceptos y principios que el aprendiz debe saber, separados por comas. Ejemplo: 'Fuerza, masa, peso, fricción, Leyes de Newton, Sistema Internacional de Unidades'",
+  "saberes_proceso": "3-5 habilidades y procesos que el aprendiz debe saber HACER, separadas por comas. Ejemplo: 'Identificar principios físicos en operaciones logísticas, aplicar fórmulas F=m·a, analizar cambios físicos en procesos productivos'",
+  "criterios_evaluacion": "3-5 criterios de evaluación concretos y medibles. Cada criterio empieza con verbo en tercera persona. Ejemplo: 'Identifica principios físicos en situaciones reales del sector minero. Resuelve ejercicios cuantitativos aplicando F=m·a con procedimiento y unidades correctas. Propone acciones de mejora aplicables al contexto de Cerrejón'",
+  "actividades_aprendizaje": "Nombre de las actividades de aprendizaje concretas que se desarrollarán. Ejemplo: 'Guía S1 RA-01: Leyes de Newton en logística minera, Quiz interactivo V/F con retroalimentación, Simulador PhET Fuerzas y Movimiento, Video experimental casero'",
+  "descripcion_evidencia": "Descripción concreta de las evidencias que produce el aprendiz. Ejemplo: 'Guía autónoma resuelta con procedimiento completo, quiz completado con puntaje mínimo del 80%, video experimental de 3-5 minutos, propuesta escrita de mejora aplicable al contexto RA-04'",
+  "estrategias_didacticas": "Estrategias didácticas activas. Ejemplo: 'Aprendizaje Basado en Problemas (ABP), simulación PhET, exposición dialogada, aprendizaje experiencial'",
+  "ambiente": "Ambiente físico requerido. Ejemplo: 'Aula de sistemas con conexión a internet y videobeam'",
+  "materiales": "Materiales de formación necesarios. Ejemplo: 'Computadores con acceso a internet, videobeam, calculadora, simulador PhET, materiales caseros para experimento'",
   "horas_directas": 48,
   "horas_independientes": 48
 }}
 
-Reglas:
-- Todo debe ser específico y coherente con el proyecto formativo
-- Los criterios de evaluación deben ser MEDIBLES y anclados al contexto real
-- horas_directas y horas_independientes son números enteros (por defecto 48 cada uno para una competencia completa)
-- No incluyas comillas dobles anidadas sin escapar dentro de los valores"""
+REGLAS OBLIGATORIAS:
+1. Todos los 10 campos deben tener contenido concreto y no vacío
+2. Los ejemplos deben estar contextualizados al programa y proyecto formativo dados
+3. horas_directas y horas_independientes son números enteros, no strings
+4. No uses comillas dobles anidadas sin escapar en los valores string
+5. Devuelve SOLO el JSON, nada más"""
 
 
 PROMPTS_DEFAULT = {
@@ -388,16 +393,41 @@ class GeminiCliente:
 
     @staticmethod
     def _parsear_json(texto: str):
-        texto = re.sub(r"^```(?:json)?", "", texto.strip(), flags=re.MULTILINE)
-        texto = re.sub(r"```$", "", texto.strip(), flags=re.MULTILINE)
+        if not texto:
+            raise RuntimeError("La IA devolvió una respuesta vacía.")
+
+        original = texto
+        # Eliminar bloques ```json ... ``` (más robusto)
         texto = texto.strip()
+        # Quitar ```json o ``` al inicio
+        texto = re.sub(r"^```(?:json|JSON)?\s*", "", texto)
+        # Quitar ``` al final
+        texto = re.sub(r"\s*```\s*$", "", texto)
+        texto = texto.strip()
+
+        # Intento 1: parseo directo
         try:
             return json.loads(texto)
         except json.JSONDecodeError:
-            m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", texto)
-            if m:
+            pass
+
+        # Intento 2: buscar el primer bloque JSON válido (objeto o array)
+        m = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", texto)
+        if m:
+            candidato = m.group(1)
+            try:
+                return json.loads(candidato)
+            except json.JSONDecodeError:
+                # Intento 3: limpiar comas colgantes y comentarios
+                limpio = re.sub(r",\s*([}\]])", r"\1", candidato)  # comas colgantes
+                limpio = re.sub(r"//[^\n]*", "", limpio)  # comentarios de línea
+                limpio = re.sub(r"/\*[\s\S]*?\*/", "", limpio)  # comentarios de bloque
                 try:
-                    return json.loads(m.group(1))
+                    return json.loads(limpio)
                 except json.JSONDecodeError:
                     pass
-            raise RuntimeError(f"No pude parsear la respuesta como JSON. Respuesta recibida:\n{texto[:500]}")
+
+        raise RuntimeError(
+            f"No pude parsear la respuesta como JSON.\n\n"
+            f"--- Respuesta recibida (primeros 800 chars) ---\n{original[:800]}"
+        )
