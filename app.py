@@ -1722,6 +1722,23 @@ def seccion_planeacion_pedagogica():
                                     "instructores": "",
                                     "observaciones": "",
                                 })
+                        # Limpiar TODAS las session_state keys de widgets de filas viejas
+                        # para que los widgets se recreen con los valores de las nuevas filas
+                        prefijos_widgets = (
+                            "pln_fase_", "pln_act_", "pln_comp_", "pln_raps_",
+                            "pln_hd_", "pln_hi_",
+                            "pln_saberes_conceptos_", "pln_saberes_proceso_",
+                            "pln_criterios_evaluacion_", "pln_actividades_aprendizaje_",
+                            "pln_descripcion_evidencia_", "pln_estrategias_didacticas_",
+                            "pln_ambiente_", "pln_materiales_", "pln_ins_", "pln_obs_",
+                        )
+                        keys_a_limpiar = [
+                            k for k in list(st.session_state.keys())
+                            if any(k.startswith(p) for p in prefijos_widgets)
+                        ]
+                        for k in keys_a_limpiar:
+                            st.session_state.pop(k, None)
+
                         st.session_state.planeacion_filas = nuevas_filas
                         st.success(f"✅ Datos aplicados. Se generaron {len(nuevas_filas)} filas. "
                                    "Ahora puedes generar los campos técnicos con la IA.")
@@ -1803,27 +1820,61 @@ def seccion_planeacion_pedagogica():
             if cli_ia:
                 if st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
                               key=f"pln_ia_{i}", use_container_width=True):
-                    with st.spinner("La IA está diseñando los campos..."):
+                    with st.spinner("La IA está diseñando los campos técnicos..."):
                         try:
+                            # Buscar guías previamente generadas para esta competencia (alineación)
+                            guias_relacionadas = _buscar_guias_de_competencia(competencia)
+
                             datos_ia = {
                                 "programa": programa, "fase": fase,
                                 "proyecto_formativo": proyecto,
                                 "actividad_proyecto": actividad_proy,
                                 "competencia": competencia,
                                 "raps": [r.strip() for r in raps_texto.splitlines() if r.strip()],
+                                "guias_relacionadas": guias_relacionadas,
                             }
                             resultado = cli_ia.generar_planeacion(datos_ia)
-                            for k in ("saberes_conceptos", "saberes_proceso", "criterios_evaluacion",
-                                     "actividades_aprendizaje", "descripcion_evidencia",
-                                     "estrategias_didacticas", "ambiente", "materiales"):
+
+                            # Actualizar los datos de la fila en session_state.planeacion_filas
+                            # (NO modificar directamente st.session_state[widget_key] porque
+                            # los widgets ya fueron instanciados en esta ejecución)
+                            fila_actual = st.session_state.planeacion_filas[i]
+                            campos_ia = ("saberes_conceptos", "saberes_proceso",
+                                         "criterios_evaluacion", "actividades_aprendizaje",
+                                         "descripcion_evidencia", "estrategias_didacticas",
+                                         "ambiente", "materiales")
+                            for k in campos_ia:
                                 if k in resultado:
-                                    st.session_state[f"pln_{k}_{i}"] = str(resultado[k])
+                                    fila_actual[k] = str(resultado[k])
                             if "horas_directas" in resultado:
-                                st.session_state[f"pln_hd_{i}"] = int(resultado["horas_directas"])
+                                try:
+                                    fila_actual["horas_directas"] = int(resultado["horas_directas"])
+                                except (ValueError, TypeError):
+                                    pass
                             if "horas_independientes" in resultado:
-                                st.session_state[f"pln_hi_{i}"] = int(resultado["horas_independientes"])
-                            st.session_state.planeacion_filas[i].update(resultado)
-                            st.success("✅ Campos generados por IA.")
+                                try:
+                                    fila_actual["horas_independientes"] = int(resultado["horas_independientes"])
+                                except (ValueError, TypeError):
+                                    pass
+
+                            # Limpiar las session_state keys de los widgets de esta fila para que
+                            # en el próximo rerun se recreen con los valores nuevos del fila_actual
+                            keys_widgets = [
+                                f"pln_hd_{i}", f"pln_hi_{i}",
+                                f"pln_saberes_conceptos_{i}", f"pln_saberes_proceso_{i}",
+                                f"pln_criterios_evaluacion_{i}",
+                                f"pln_actividades_aprendizaje_{i}",
+                                f"pln_descripcion_evidencia_{i}",
+                                f"pln_estrategias_didacticas_{i}",
+                                f"pln_ambiente_{i}", f"pln_materiales_{i}",
+                            ]
+                            for kw in keys_widgets:
+                                st.session_state.pop(kw, None)
+
+                            mensaje = "✅ Campos generados por IA."
+                            if guias_relacionadas:
+                                mensaje += f" (Se usaron {len(guias_relacionadas)} guía(s) previa(s) como contexto)."
+                            st.success(mensaje)
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
@@ -2086,6 +2137,33 @@ def selector_cascada_proyecto(key_prefix: str = "sel"):
         "competencia": competencia,
         "raps": raps,
     }
+
+
+def _buscar_guias_de_competencia(competencia_texto: str) -> list:
+    """Busca en el historial de guías las que corresponden a esta competencia.
+    Devuelve lista de resúmenes con fase, RAP focal, actividades.
+    """
+    if not competencia_texto:
+        return []
+    # Extraer código de competencia del texto (primeros 9 dígitos)
+    m = re.search(r"(\d{6,9})", competencia_texto)
+    codigo_buscar = m.group(1) if m else ""
+    if not codigo_buscar:
+        return []
+
+    guias = cargar_guias_historial()
+    coincidencias = []
+    for g in guias:
+        comp_guia = g.get("competencia", "")
+        cod_guia = g.get("codigo_competencia", "")
+        if codigo_buscar and (codigo_buscar in comp_guia or codigo_buscar == cod_guia):
+            coincidencias.append({
+                "fecha": g.get("fecha", ""),
+                "fase": g.get("fase", ""),
+                "rap_focal": g.get("rap_focal", ""),
+                "proyecto_formativo": g.get("proyecto_formativo", ""),
+            })
+    return coincidencias
 
 
 # ============ HELPERS ============
