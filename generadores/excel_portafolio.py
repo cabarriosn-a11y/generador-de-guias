@@ -190,8 +190,12 @@ def _construir_hoja_aprendiz(ws, plan, datos_guia, instructor):
 
     for i, act in enumerate(cronograma, start=1):
         fila = fila_headers + i
+        # Titulo de actividad, con horas solo si aplican
+        titulo_act = act['titulo']
+        if act.get('horas', 0) > 0:
+            titulo_act += f" ({act['horas']:.0f} h)"
         valores = [
-            f"{act['titulo']} ({act['horas']:.0f} h)",
+            titulo_act,
             act["descripcion"],
             act["fecha_inicio"].strftime("%d/%m/%Y") if hasattr(act["fecha_inicio"], "strftime") else str(act["fecha_inicio"]),
             act["fecha_entrega"].strftime("%d/%m/%Y") if hasattr(act["fecha_entrega"], "strftime") else str(act["fecha_entrega"]),
