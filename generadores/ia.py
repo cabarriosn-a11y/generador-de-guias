@@ -1,10 +1,12 @@
 """Integración con Gemini para generar contenido pedagógico SENA.
 
-Los prompts son editables por el usuario desde la app (se guardan en data/prompts.json).
-También acepta 'instrucciones_extra' por llamada para afinar sin editar el prompt base.
+Prompts editables por el usuario (data/prompts.json).
+Instrucciones extras por llamada para afinar sin editar el prompt base.
+Pausa automática entre llamadas para respetar el rate limit gratuito.
 """
 import json
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -15,10 +17,18 @@ except ImportError:
     GEMINI_DISPONIBLE = False
 
 
-# ============ PROMPTS POR DEFECTO ============
-# El usuario puede sobreescribirlos desde la app en "🎨 Prompts de la IA".
-# Los placeholders {variable} se reemplazan con los datos de la guía en tiempo real.
+# ============ RATE LIMITING ============
+PAUSAS_POR_MODELO = {
+    "gemini-2.5-flash": 7,
+    "gemini-flash-latest": 7,
+    "gemini-3-flash": 13,
+    "gemini-3.5-flash": 13,
+    "gemini-3.1-flash-lite": 5,
+}
+PAUSA_DEFAULT = 8
 
+
+# ============ PROMPTS POR DEFECTO ============
 SYSTEM_PROMPT_DEFAULT = """Eres ProfeNaturales SENA, instructor experto en ciencias naturales aplicadas al contexto productivo colombiano.
 Estás ayudando a diseñar guías de aprendizaje para aprendices SENA de nivel BÁSICO en programas técnicos.
 
@@ -119,18 +129,50 @@ Incluye:
 Formato APA simplificado."""
 
 
+# NUEVO: Prompt para planeación pedagógica (formato GFPI-F-134)
+PROMPT_PLANEACION_DEFAULT = """Diseña los campos técnicos de la PLANEACIÓN PEDAGÓGICA (formato GFPI-F-134 del SENA) para esta competencia.
+
+Programa: {programa}
+Fase del proyecto: {fase}
+Proyecto formativo: {proyecto_formativo}
+Actividad de proyecto formativo: {actividad_proyecto}
+Competencia: {competencia}
+Resultados de aprendizaje:
+{raps_formateados}
+
+Responde ÚNICAMENTE en JSON válido (sin markdown, sin ```json):
+{{
+  "saberes_conceptos": "Conceptos y principios que el aprendiz DEBE saber. Lista breve separada por comas.",
+  "saberes_proceso": "Habilidades y procesos que el aprendiz DEBE saber HACER. Lista breve separada por comas.",
+  "criterios_evaluacion": "Criterios que se usarán para evaluar el aprendizaje. Cada criterio empieza con verbo en tercera persona (identifica, calcula, propone, verifica...). Deben ser CONCRETOS Y MEDIBLES en el contexto del proyecto formativo.",
+  "actividades_aprendizaje": "Nombre de las actividades de aprendizaje asociadas a esta competencia (ej: 'Guía S1 RA-01: Leyes de Newton en Cerrejón, Quiz VF, Simulador PhET, Video experimental').",
+  "descripcion_evidencia": "Descripción concreta de las evidencias que produce el aprendiz (ej: 'Guía autónoma resuelta, quiz completado con puntaje mínimo, video experimental de 3-5 min, propuesta escrita de mejora').",
+  "estrategias_didacticas": "Estrategias didácticas activas a usar. Lista corta (ej: 'ABP, simulación, aprendizaje experiencial, exposición dialogada').",
+  "ambiente": "Ambiente físico requerido (ej: 'Aula de sistemas con conexión a internet').",
+  "materiales": "Materiales de formación necesarios (ej: 'Computadores, video beam, calculadora, simulador PhET').",
+  "horas_directas": 48,
+  "horas_independientes": 48
+}}
+
+Reglas:
+- Todo debe ser específico y coherente con el proyecto formativo
+- Los criterios de evaluación deben ser MEDIBLES y anclados al contexto real
+- horas_directas y horas_independientes son números enteros (por defecto 48 cada uno para una competencia completa)
+- No incluyas comillas dobles anidadas sin escapar dentro de los valores"""
+
+
 PROMPTS_DEFAULT = {
     "system": SYSTEM_PROMPT_DEFAULT,
     "presentacion": PROMPT_PRESENTACION_DEFAULT,
     "actividad": PROMPT_ACTIVIDAD_DEFAULT,
     "glosario": PROMPT_GLOSARIO_DEFAULT,
     "referentes": PROMPT_REFERENTES_DEFAULT,
+    "planeacion": PROMPT_PLANEACION_DEFAULT,
 }
 
 
 # ============ GESTIÓN DE PROMPTS PERSONALIZADOS ============
 def cargar_prompts(prompts_file: Path) -> dict:
-    """Carga los prompts del usuario. Cualquier prompt no editado usa el default."""
     if prompts_file.exists():
         try:
             custom = json.loads(prompts_file.read_text(encoding="utf-8"))
@@ -145,7 +187,6 @@ def guardar_prompts(prompts_file: Path, prompts: dict):
 
 
 def restablecer_prompt(prompts_file: Path, clave: str) -> dict:
-    """Restablece un prompt específico a su valor por defecto."""
     prompts = cargar_prompts(prompts_file)
     prompts[clave] = PROMPTS_DEFAULT[clave]
     guardar_prompts(prompts_file, prompts)
@@ -154,7 +195,7 @@ def restablecer_prompt(prompts_file: Path, clave: str) -> dict:
 
 # ============ CLIENTE GEMINI ============
 class GeminiCliente:
-    """Cliente Gemini con prompts editables e instrucciones extra por llamada."""
+    """Cliente Gemini con prompts editables, instrucciones extra y pausas automáticas."""
 
     TITULOS_FASE = {
         "3.1": "Reflexión inicial (activación de saberes previos, sin dar aún el concepto)",
@@ -171,6 +212,10 @@ class GeminiCliente:
             raise ValueError("Se requiere una API key de Gemini. Obtenla gratis en https://aistudio.google.com/apikey")
 
         self.prompts = prompts or dict(PROMPTS_DEFAULT)
+        self.modelo_nombre = modelo
+        self.pausa_s = PAUSAS_POR_MODELO.get(modelo, PAUSA_DEFAULT)
+        self._ultima_llamada_ts = 0.0
+
         genai.configure(api_key=api_key.strip())
         self.modelo = genai.GenerativeModel(
             model_name=modelo,
@@ -237,43 +282,67 @@ class GeminiCliente:
         return data if isinstance(data, list) else []
 
     def generar_todo(self, datos_iniciales: dict, instrucciones_extra: dict = None) -> dict:
-        """Genera TODO el contenido de una vez.
-        instrucciones_extra puede ser un dict con keys 'presentacion', '3.1', '3.2', '3.3', '3.4',
-        'glosario', 'referentes' — cada valor es una instrucción extra opcional."""
         extra = instrucciones_extra or {}
         datos = dict(datos_iniciales)
-
         datos["presentacion"] = self.generar_presentacion(
-            datos, instrucciones_extra=extra.get("presentacion", "")
-        )
-
+            datos, instrucciones_extra=extra.get("presentacion", ""))
         actividades = {}
         for key in ["3.1", "3.2", "3.3", "3.4"]:
             actividades[key] = self.generar_actividad(
                 key, datos, actividades_previas=actividades,
-                instrucciones_extra=extra.get(key, "")
-            )
+                instrucciones_extra=extra.get(key, ""))
         datos["actividades"] = actividades
-
-        datos["glosario"] = self.generar_glosario(
-            datos, instrucciones_extra=extra.get("glosario", "")
-        )
-        datos["referentes"] = self.generar_referentes(
-            datos, instrucciones_extra=extra.get("referentes", "")
-        )
+        datos["glosario"] = self.generar_glosario(datos, instrucciones_extra=extra.get("glosario", ""))
+        datos["referentes"] = self.generar_referentes(datos, instrucciones_extra=extra.get("referentes", ""))
         return datos
 
+    # ---------- NUEVO: Método para planeación pedagógica ----------
+    def generar_planeacion(self, datos: dict, instrucciones_extra: str = "") -> dict:
+        """Genera los campos técnicos de UNA fila de la planeación pedagógica.
+        Recibe: programa, fase, proyecto_formativo, actividad_proyecto, competencia, raps.
+        Devuelve dict con: saberes_conceptos, saberes_proceso, criterios_evaluacion,
+                          actividades_aprendizaje, descripcion_evidencia, estrategias_didacticas,
+                          ambiente, materiales, horas_directas, horas_independientes.
+        """
+        prompt = self.prompts.get("planeacion", PROMPT_PLANEACION_DEFAULT).format(
+            programa=datos.get("programa", ""),
+            fase=datos.get("fase", ""),
+            proyecto_formativo=datos.get("proyecto_formativo", ""),
+            actividad_proyecto=datos.get("actividad_proyecto", ""),
+            competencia=datos.get("competencia", ""),
+            raps_formateados=self._formatear_raps(datos.get("raps", [])),
+        )
+        prompt = self._aplicar_extra(prompt, instrucciones_extra)
+        respuesta = self._llamar(prompt)
+        return self._parsear_json(respuesta)
+
     # ---------- helpers internos ----------
-    def _llamar(self, prompt: str) -> str:
-        try:
-            resp = self.modelo.generate_content(prompt)
-            return resp.text.strip()
-        except Exception as e:
-            raise RuntimeError(f"Error al llamar a Gemini: {e}")
+    def _respetar_pausa(self):
+        transcurrido = time.time() - self._ultima_llamada_ts
+        if transcurrido < self.pausa_s:
+            time.sleep(self.pausa_s - transcurrido)
+
+    def _llamar(self, prompt: str, reintentos: int = 2) -> str:
+        for intento in range(reintentos + 1):
+            self._respetar_pausa()
+            try:
+                resp = self.modelo.generate_content(prompt)
+                self._ultima_llamada_ts = time.time()
+                return resp.text.strip()
+            except Exception as e:
+                self._ultima_llamada_ts = time.time()
+                mensaje = str(e)
+                if "429" in mensaje or "quota" in mensaje.lower() or "rate" in mensaje.lower():
+                    if intento < reintentos:
+                        m = re.search(r"retry.*?(\d+)\s*s", mensaje)
+                        espera = int(m.group(1)) + 2 if m else 30
+                        time.sleep(min(espera, 60))
+                        continue
+                raise RuntimeError(f"Error al llamar a Gemini: {e}")
+        raise RuntimeError("Se agotaron los reintentos por rate limit.")
 
     @staticmethod
     def _aplicar_extra(prompt: str, extra: str) -> str:
-        """Añade las instrucciones extra del usuario al final del prompt base."""
         extra = (extra or "").strip()
         if not extra:
             return prompt
