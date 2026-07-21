@@ -146,7 +146,7 @@ def datos_desde_form():
         "programa": st.session_state.get("form_programa", ""),
         "codigo_programa": st.session_state.get("form_codigo_prog", ""),
         "proyecto_formativo": st.session_state.get("form_proyecto", ""),
-        "fase_proyecto": st.session_state.get("form_fase", "Planear"),
+        "fase_proyecto": st.session_state.get("form_fase", "Planeación"),
         "actividad_proyecto": st.session_state.get("form_actividad_proyecto", ""),
         "competencia": st.session_state.get("form_competencia", ""),
         "raps": [st.session_state.get(f"rap_{i}", "") for i in range(10) if st.session_state.get(f"rap_{i}", "").strip()],
@@ -487,7 +487,7 @@ def seccion_nueva_guia():
                 st.session_state.form_programa = proy.get("programa_formacion", "")
                 st.session_state.form_codigo_prog = proy.get("codigo_programa_sofia", "")
                 st.session_state.form_proyecto = proy.get("nombre_proyecto", "")
-                st.session_state.form_fase = seleccion["fase"]["nombre"].title()
+                st.session_state.form_fase = seleccion["fase"]["nombre"]
                 st.session_state.form_actividad_proyecto = seleccion["actividad"]["nombre"]
                 st.session_state.form_competencia_sel = comp["nombre"]
                 st.session_state.form_codigo_comp = comp["codigo"]
@@ -578,9 +578,13 @@ def seccion_nueva_guia():
     with col1:
         proyecto = st.text_area("Nombre del proyecto formativo", height=80, key="form_proyecto")
     with col2:
-        fase = st.selectbox("Fase del proyecto",
-                            ["Análisis", "Planear", "Ejecución", "Evaluación"],
-                            index=1, key="form_fase")
+        fase = st.text_input(
+            "Fase del proyecto",
+            value=st.session_state.get("form_fase", "Planeación"),
+            key="form_fase",
+            help="Escribe el nombre de la fase tal como aparece en tu proyecto formativo. "
+                 "Ej: ANÁLISIS, PLANEACIÓN, PLANEAR, DISEÑO, EJECUCIÓN, EVALUACIÓN."
+        )
     actividad_proyecto = st.text_area("Actividad del proyecto formativo", height=70,
                                       key="form_actividad_proyecto")
 
@@ -1701,7 +1705,7 @@ def seccion_planeacion_pedagogica():
                                     f"{r['codigo']} - {r['nombre']}" for r in comp.get("raps", [])
                                 )
                                 nuevas_filas.append({
-                                    "fase": fase_sel["nombre"].title(),
+                                    "fase": fase_sel["nombre"],
                                     "actividad_proyecto": act["nombre"],
                                     "competencia": f"{comp['codigo']} - {comp['nombre']}",
                                     "raps": raps_texto,
@@ -1777,9 +1781,13 @@ def seccion_planeacion_pedagogica():
                          expanded=(i == 0)):
             c1, c2 = st.columns(2)
             with c1:
-                fases_opts = ["Análisis", "Planear", "Ejecución", "Evaluación"]
-                fase = st.selectbox("Fase", fases_opts, key=f"pln_fase_{i}",
-                    index=fases_opts.index(fila.get("fase", "Planear")))
+                fase = st.text_input(
+                    "Fase",
+                    value=str(fila.get("fase", "")),
+                    key=f"pln_fase_{i}",
+                    help="Escribe el nombre exacto de la fase como aparece en tu proyecto formativo. "
+                         "Ej: ANÁLISIS, PLANEACIÓN, PLANEAR, DISEÑO, EJECUCIÓN, EVALUACIÓN, etc."
+                )
                 actividad_proy = st.text_area("Actividad del Proyecto Formativo",
                     value=fila.get("actividad_proyecto", ""), height=80, key=f"pln_act_{i}")
                 competencia = st.text_area("Competencia (código + nombre)",
@@ -1899,7 +1907,7 @@ def seccion_planeacion_pedagogica():
 
 def _fila_planeacion_vacia():
     return {
-        "fase": "Planear", "actividad_proyecto": "", "competencia": "", "raps": "",
+        "fase": "", "actividad_proyecto": "", "competencia": "", "raps": "",
         "saberes_conceptos": "", "saberes_proceso": "", "criterios_evaluacion": "",
         "actividades_aprendizaje": "", "horas_directas": 48, "horas_independientes": 48,
         "descripcion_evidencia": "", "estrategias_didacticas": "",
