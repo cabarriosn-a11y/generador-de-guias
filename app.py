@@ -1,5 +1,5 @@
 """
-Generador de Guías de Aprendizaje SENA — ProfeNaturales
+Generador de Guías de Aprendizaje SENA — instructor Sena
 Con integración de IA (Gemini) para generar contenido automáticamente.
 
 Cambios importantes vs versión anterior:
@@ -24,7 +24,10 @@ import streamlit as st
 from generadores.guia_aprendizaje import generar_guia_aprendizaje
 from generadores.guia_instructor import generar_guia_instructor
 from generadores.rubricas import generar_rubricas
-from generadores.plan_trabajo import generar_plan_trabajo, calcular_cronograma
+from generadores.plan_trabajo import (
+    generar_plan_trabajo, calcular_cronograma,
+    calcular_cronograma_por_rango, contar_dias_habiles,
+)
 from generadores.excel_portafolio import generar_excel_portafolio
 from generadores.email_sender import (
     enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
@@ -37,7 +40,7 @@ from generadores.ia import (
 
 # ============ CONFIG ============
 st.set_page_config(
-    page_title="Generador Guías SENA — ProfeNaturales",
+    page_title="Generador Guías SENA — Instructor Sena",
     page_icon="📘",
     layout="wide",
 )
@@ -1121,65 +1124,105 @@ def _tab_guia_cronograma():
     st.markdown(f"**Competencia:** {guia_seleccionada.get('competencia', '')}")
     st.markdown(f"**Fase:** {guia_seleccionada.get('fase', '')}")
 
-    # Cronograma
-    st.subheader("Cronograma de entrega")
+    # ---- CRONOGRAMA POR RANGO DE FECHAS ----
+    st.subheader("📅 Fechas del cronograma")
+    st.caption(
+        "Todas las 4 actividades tendrán la MISMA fecha de inicio y la MISMA fecha final. "
+        "Los aprendices deben cumplirlas dentro de este rango de tiempo."
+    )
+
     col1, col2 = st.columns(2)
     with col1:
-        fecha_inicio = st.date_input("Fecha de inicio de las actividades",
-                                     value=date.today(), key="plan_fecha_inicio")
+        fecha_inicio = st.date_input(
+            "Fecha de inicio",
+            value=st.session_state.get("plan_fecha_inicio_val", date.today()),
+            key="plan_fecha_inicio",
+            help="Día en que arrancan las actividades para todos los aprendices.",
+        )
     with col2:
-        horas_dia = st.number_input("Horas efectivas por día del aprendiz",
-                                     min_value=0.5, max_value=8.0, value=2.0, step=0.5,
-                                     help="Sirve para estimar días hábiles entre entregas")
+        fecha_final = st.date_input(
+            "Fecha final (entrega)",
+            value=st.session_state.get("plan_fecha_final_val",
+                                       date.today().replace(month=min(date.today().month+2, 12))),
+            key="plan_fecha_final",
+            help="Fecha límite de entrega de todas las actividades.",
+        )
 
-    # Necesitamos las actividades de la guía. Como el historial no las guarda,
-    # vamos a permitir editar la duración de cada actividad manualmente aquí.
-    st.markdown("**Duración de cada actividad (horas):**")
+    # Validación básica
+    if fecha_final < fecha_inicio:
+        st.error("⚠️ La fecha final no puede ser anterior a la fecha de inicio.")
+        return
+
+    # Contar días hábiles del rango como información al instructor
+    dias_habiles = contar_dias_habiles(fecha_inicio, fecha_final)
+    dias_totales = (fecha_final - fecha_inicio).days + 1
+    fin_de_semana = dias_totales - dias_habiles
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Días totales", dias_totales)
+    col_b.metric("Días hábiles (L–V)", dias_habiles)
+    col_c.metric("Fines de semana", fin_de_semana)
+
+    # ---- Descripciones de actividades ----
+    st.subheader("📝 Descripción de cada actividad")
+    st.caption("Estas descripciones aparecen en el PDF del plan de trabajo de cada aprendiz.")
+
     actividades_input = {}
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
+    with st.expander("Actividad 3.1 · Reflexión inicial", expanded=False):
         actividades_input["3.1"] = {
-            "duracion": f"{st.number_input('Act. 3.1', 0.5, 10.0, 1.0, 0.5, key='dur_apr_31')} h",
-            "descripcion": st.text_area("Descripción 3.1", height=80, key="desc_apr_31",
-                                         value="Reflexión inicial sobre la situación real."),
+            "duracion": "",  # ya no se usa
+            "descripcion": st.text_area(
+                "Descripción 3.1", height=80, key="desc_apr_31",
+                value="Reflexión inicial sobre la situación real del contexto productivo.",
+            ),
         }
-    with c2:
+    with st.expander("Actividad 3.2 · Contextualización", expanded=False):
         actividades_input["3.2"] = {
-            "duracion": f"{st.number_input('Act. 3.2', 0.5, 10.0, 1.0, 0.5, key='dur_apr_32')} h",
-            "descripcion": st.text_area("Descripción 3.2", height=80, key="desc_apr_32",
-                                         value="Contextualización con el concepto clave."),
+            "duracion": "",
+            "descripcion": st.text_area(
+                "Descripción 3.2", height=80, key="desc_apr_32",
+                value="Contextualización mediante la introducción del concepto clave.",
+            ),
         }
-    with c3:
+    with st.expander("Actividad 3.3 · Apropiación", expanded=False):
         actividades_input["3.3"] = {
-            "duracion": f"{st.number_input('Act. 3.3', 0.5, 10.0, 4.0, 0.5, key='dur_apr_33')} h",
-            "descripcion": st.text_area("Descripción 3.3", height=80, key="desc_apr_33",
-                                         value="Apropiación mediante ejercicios prácticos."),
+            "duracion": "",
+            "descripcion": st.text_area(
+                "Descripción 3.3", height=80, key="desc_apr_33",
+                value="Apropiación mediante ejercicios prácticos y simuladores.",
+            ),
         }
-    with c4:
+    with st.expander("Actividad 3.4 · Transferencia", expanded=False):
         actividades_input["3.4"] = {
-            "duracion": f"{st.number_input('Act. 3.4', 0.5, 10.0, 2.0, 0.5, key='dur_apr_34')} h",
-            "descripcion": st.text_area("Descripción 3.4", height=80, key="desc_apr_34",
-                                         value="Transferencia mediante evidencia individual."),
+            "duracion": "",
+            "descripcion": st.text_area(
+                "Descripción 3.4", height=80, key="desc_apr_34",
+                value="Transferencia del conocimiento al contexto laboral real, evidencia individual.",
+            ),
         }
 
-    # Calcular preview del cronograma
+    # ---- Vista previa del cronograma ----
     if st.button("🔍 Vista previa del cronograma", use_container_width=True):
-        crono = calcular_cronograma(actividades_input, fecha_inicio, horas_dia)
+        crono = calcular_cronograma_por_rango(actividades_input, fecha_inicio, fecha_final)
         df_preview = pd.DataFrame([
             {
                 "Actividad": c["titulo"],
-                "Horas": c["horas"],
-                "Inicio": c["fecha_inicio"].strftime("%d/%m/%Y (%A)"),
-                "Entrega": c["fecha_entrega"].strftime("%d/%m/%Y (%A)"),
+                "Descripción": c["descripcion"][:60] + "...",
+                "Inicio": c["fecha_inicio"].strftime("%d/%m/%Y"),
+                "Entrega": c["fecha_entrega"].strftime("%d/%m/%Y"),
             }
             for c in crono
         ])
-        st.dataframe(df_preview, use_container_width=True)
+        st.dataframe(df_preview, use_container_width=True, hide_index=True)
+        st.info(f"📌 Las 4 actividades comparten el mismo rango: "
+                f"del **{fecha_inicio.strftime('%d/%m/%Y')}** al **{fecha_final.strftime('%d/%m/%Y')}** "
+                f"({dias_habiles} días hábiles).")
 
     # Guardar en session_state
     st.session_state.plan_actividades = actividades_input
     st.session_state.plan_fecha_inicio_val = fecha_inicio
-    st.session_state.plan_horas_dia = horas_dia
+    st.session_state.plan_fecha_final_val = fecha_final
+    st.session_state.plan_modo_cronograma = "rango"
 
 
 def _tab_generar_enviar():
@@ -1196,7 +1239,7 @@ def _tab_generar_enviar():
     guia = st.session_state.plan_guia
     actividades = st.session_state.get("plan_actividades", {})
     fecha_inicio = st.session_state.get("plan_fecha_inicio_val", date.today())
-    horas_dia = st.session_state.get("plan_horas_dia", 2.0)
+    fecha_final = st.session_state.get("plan_fecha_final_val", date.today())
 
     cfg = cargar_config()
     correo_configurado = bool(cfg.get("smtp_remitente") and cfg.get("smtp_contrasena"))
@@ -1240,7 +1283,7 @@ def _tab_generar_enviar():
     if st.button(f"🚀 Procesar {len(aprendices_a_procesar)} aprendices",
                  type="primary", use_container_width=True):
         _procesar_planes(aprendices_a_procesar, guia, actividades, fecha_inicio,
-                         horas_dia, enviar, cfg)
+                         fecha_final, enviar, cfg)
 
     # Mostrar resultados si existen
     if st.session_state.get("planes_generados"):
@@ -1249,7 +1292,7 @@ def _tab_generar_enviar():
         _mostrar_resultados_planes()
 
 
-def _procesar_planes(aprendices, guia, actividades, fecha_inicio, horas_dia, enviar, cfg):
+def _procesar_planes(aprendices, guia, actividades, fecha_inicio, fecha_final, enviar, cfg):
     """Genera un PDF por aprendiz, envía correo si aplica, y consolida en Excel."""
     from datetime import datetime as dt
 
@@ -1268,7 +1311,8 @@ def _procesar_planes(aprendices, guia, actividades, fecha_inicio, horas_dia, env
     log_placeholder = st.empty()
     log = []
 
-    cronograma = calcular_cronograma(actividades, fecha_inicio, horas_dia)
+    # Nuevo: cronograma por rango de fechas (todas las actividades misma fecha)
+    cronograma = calcular_cronograma_por_rango(actividades, fecha_inicio, fecha_final)
 
     planes_generados = []
     total = len(aprendices)
