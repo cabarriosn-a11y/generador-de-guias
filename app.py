@@ -33,6 +33,10 @@ from generadores.email_sender import (
     enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
 )
 from generadores.planeacion_pedagogica import generar_planeacion
+from generadores.proyectos_formativos import (
+    procesar_pdf as procesar_pdf_proyecto,
+    cargar_proyectos, agregar_o_actualizar_proyecto, eliminar_proyecto,
+)
 from generadores.ia import (
     GeminiCliente, GEMINI_DISPONIBLE,
     PROMPTS_DEFAULT, cargar_prompts, guardar_prompts, restablecer_prompt,
@@ -64,6 +68,9 @@ APRENDICES_FILE = DATA_DIR / "aprendices.json"
 # Planeaciones pedagógicas
 PLANEACIONES_DIR = DATA_DIR / "planeaciones"
 PLANEACIONES_DIR.mkdir(exist_ok=True)
+
+# Proyectos formativos parseados desde PDFs
+PROYECTOS_FILE = DATA_DIR / "proyectos_formativos.json"
 
 
 # ============ RATE LIMITING VISUALES ============
@@ -254,6 +261,7 @@ with st.sidebar:
     seccion = st.radio(
         "Navegación",
         ["🆕 Nueva guía", "📋 Planes de Trabajo", "🗓️ Planeación Pedagógica",
+         "📄 Proyectos Formativos",
          "🤖 Configurar IA", "✉️ Configurar correo",
          "🎨 Prompts de la IA", "⚙️ Cargar competencias",
          "💾 Guías guardadas", "📚 RAPs guardados", "ℹ️ Ayuda"],
@@ -461,6 +469,34 @@ def seccion_nueva_guia():
 
         gen_todo = st.button("🪄 Generar todo el contenido de la guía",
                              type="primary", use_container_width=True)
+
+    # ---- CARGAR DESDE PROYECTO FORMATIVO (nuevo) ----
+    proyectos_disponibles = cargar_proyectos(PROYECTOS_FILE)
+    if proyectos_disponibles:
+        st.markdown("---")
+        st.subheader("📄 Cargar datos desde Proyecto Formativo (opcional)")
+        st.caption("Si tienes proyectos formativos cargados, puedes seleccionar uno "
+                   "para auto-llenar programa, fase, actividad, competencia y RAPs.")
+
+        with st.expander("🔽 Seleccionar desde Proyecto Formativo", expanded=False):
+            seleccion = selector_cascada_proyecto(key_prefix="ng")
+            if seleccion.get("competencia") and st.button(
+                "✅ Aplicar selección al formulario", use_container_width=True):
+                proy = seleccion["proyecto"]
+                comp = seleccion["competencia"]
+                st.session_state.form_programa = proy.get("programa_formacion", "")
+                st.session_state.form_codigo_prog = proy.get("codigo_programa_sofia", "")
+                st.session_state.form_proyecto = proy.get("nombre_proyecto", "")
+                st.session_state.form_fase = seleccion["fase"]["nombre"].title()
+                st.session_state.form_actividad_proyecto = seleccion["actividad"]["nombre"]
+                st.session_state.form_competencia_sel = comp["nombre"]
+                st.session_state.form_codigo_comp = comp["codigo"]
+                # Cargar RAPs
+                for i, rap in enumerate(seleccion["raps"]):
+                    st.session_state[f"rap_{i}"] = f"{rap['codigo']} - {rap['nombre']}"
+                st.session_state.n_raps_detectados = len(seleccion["raps"])
+                st.success("✅ Datos aplicados al formulario. Revísalo abajo.")
+                st.rerun()
 
     # ---- PASO 1: Programa y competencia ----
     st.subheader("Paso 1 · Programa y competencia")
@@ -1590,20 +1626,31 @@ def seccion_ayuda():
     st.markdown("""
 ### 🎯 Flujo recomendado
 
-1. **🤖 Configurar IA** → pega tu API key gratis de Gemini y tu nombre.
-2. **⚙️ Cargar competencias** → sube tu Excel una sola vez.
-3. **🆕 Nueva guía**:
-   - Selecciona programa → competencia → **RAPs y código se auto-llenan del Excel**
-   - Click en **🪄 Generar todo con IA** (arriba de todo)
-   - Revisa y ajusta cada sección
-   - Click en **🎯 Generar los 3 documentos** → descarga
-4. **💾 Guías guardadas** → todas las guías anteriores con botones de descarga.
+1. **🤖 Configurar IA** → API key gratis de Gemini
+2. **✉️ Configurar correo** → Gmail + tu nombre (aparece como firma en el PDF)
+3. **📄 Proyectos Formativos** (NUEVO) → sube el PDF del reporte GFPI-F-016 de cada programa
+4. **🆕 Nueva guía** → genera Guía Aprendiz + Instructor + Rúbricas
+5. **📋 Planes de Trabajo** → PDF individual por aprendiz + envío correo
+6. **🗓️ Planeación Pedagógica** → formato oficial GFPI-F-134 (Excel)
 
-### 📊 Estructura del Excel
+### 📄 Documentos que genera la app
+- Guía del Aprendiz, Guía del Instructor, Rúbricas (formato GFPI-F-135)
+- Plan de Trabajo individual del aprendiz (PDF con firma cursiva)
+- Excel consolidado del portafolio del instructor
+- Planeación Pedagógica (formato oficial GFPI-F-134)
 
-Una fila por competencia. Columnas: `Programa | Codigo Programa | Competencia | Codigo Competencia | RAP1 | RAP2 | RAP3 | RAP4`
+### 📄 Proyectos Formativos (nuevo)
 
-Descarga la plantilla de ejemplo desde **⚙️ Cargar competencias**.
+Sube el PDF del reporte del proyecto formativo (GFPI-F-016). La app extrae automáticamente:
+- Información básica (código SOFIA, programa, fichas, tiempo)
+- Fases del proyecto (Análisis, Planeación, Ejecución, Evaluación)
+- Actividad principal de cada fase
+- Todas las competencias con sus RAPs
+
+Luego en **🆕 Nueva guía** y **🗓️ Planeación Pedagógica** aparece un selector cascada:
+**Proyecto → Fase → Actividad → Competencia** que auto-llena todo el formulario.
+
+**El PDF se procesa localmente con `pypdf`, NO consume tokens de IA.**
 """)
 
 
@@ -1612,6 +1659,69 @@ def seccion_planeacion_pedagogica():
     st.header("🗓️ Planeación Pedagógica (GFPI-F-134)")
     st.caption("Genera el formato oficial de planeación por fase del proyecto formativo. "
                "Cada fase puede contener múltiples competencias.")
+
+    # ---- Cargar desde Proyecto Formativo (opcional) ----
+    proyectos_disponibles = cargar_proyectos(PROYECTOS_FILE)
+    if proyectos_disponibles:
+        with st.expander("📄 Cargar datos desde Proyecto Formativo (opcional)", expanded=False):
+            st.caption("Selecciona un proyecto formativo para autocompletar datos generales "
+                       "y también generar automáticamente las filas por competencia de la fase.")
+            proyectos_lista = ["— Ninguno —"] + [
+                f"[{p.get('codigo_proyecto_sofia', '?')}] {p.get('programa_formacion', '')[:60]}"
+                for p in proyectos_disponibles
+            ]
+            idx_p = st.selectbox("Proyecto formativo", range(len(proyectos_lista)),
+                                  format_func=lambda i: proyectos_lista[i], key="pln_proy_sel")
+            if idx_p > 0:
+                proy_sel = proyectos_disponibles[idx_p - 1]
+
+                fases_disponibles = ["— Ninguna —"] + [f["nombre"] for f in proy_sel.get("fases", [])]
+                idx_f = st.selectbox("Fase a autocompletar", range(len(fases_disponibles)),
+                                      format_func=lambda i: fases_disponibles[i], key="pln_fase_sel")
+
+                if idx_f > 0:
+                    fase_sel = proy_sel["fases"][idx_f - 1]
+                    total_comp = sum(len(a.get("competencias", []))
+                                     for a in fase_sel.get("actividades", []))
+                    st.info(f"Al aplicar, se autocompletan los datos generales del proyecto y se "
+                            f"generarán **{total_comp} filas** (una por competencia de la fase).")
+
+                    if st.button("✅ Aplicar y generar filas automáticas",
+                                 type="primary", use_container_width=True):
+                        # Autocompletar datos generales
+                        st.session_state.plan_programa = proy_sel.get("programa_formacion", "")
+                        st.session_state.plan_cod_prog = f"{proy_sel.get('codigo_programa_sofia', '')} - Versión {proy_sel.get('version_programa', '1')}"
+                        st.session_state.plan_proy = proy_sel.get("nombre_proyecto", "")
+                        st.session_state.plan_cod_proy = proy_sel.get("codigo_proyecto_sofia", "")
+                        # Generar filas
+                        nuevas_filas = []
+                        for act in fase_sel.get("actividades", []):
+                            for comp in act.get("competencias", []):
+                                raps_texto = "\n".join(
+                                    f"{r['codigo']} - {r['nombre']}" for r in comp.get("raps", [])
+                                )
+                                nuevas_filas.append({
+                                    "fase": fase_sel["nombre"].title(),
+                                    "actividad_proyecto": act["nombre"],
+                                    "competencia": f"{comp['codigo']} - {comp['nombre']}",
+                                    "raps": raps_texto,
+                                    "saberes_conceptos": "",
+                                    "saberes_proceso": "",
+                                    "criterios_evaluacion": "",
+                                    "actividades_aprendizaje": "",
+                                    "horas_directas": 48,
+                                    "horas_independientes": 48,
+                                    "descripcion_evidencia": "",
+                                    "estrategias_didacticas": "",
+                                    "ambiente": "",
+                                    "materiales": "",
+                                    "instructores": "",
+                                    "observaciones": "",
+                                })
+                        st.session_state.planeacion_filas = nuevas_filas
+                        st.success(f"✅ Datos aplicados. Se generaron {len(nuevas_filas)} filas. "
+                                   "Ahora puedes generar los campos técnicos con la IA.")
+                        st.rerun()
 
     st.subheader("1. Datos generales")
     cfg = cargar_config()
@@ -1797,6 +1907,179 @@ def _fila_planeacion_vacia():
     }
 
 
+# ============ NUEVA SECCIÓN: PROYECTOS FORMATIVOS ============
+def seccion_proyectos_formativos():
+    st.header("📄 Proyectos Formativos")
+    st.caption("Sube el PDF del reporte del proyecto formativo (formato GFPI-F-016 del SENA). "
+               "La app extrae automáticamente fases, actividades, competencias y RAPs "
+               "para poder usarlos en el resto de módulos.")
+
+    st.info("🔒 **Los PDFs se procesan localmente en el servidor con `pypdf`, "
+            "sin consumir tokens de IA.** Solo se guarda la estructura extraída, no el PDF.")
+
+    # ---- Cargar PDF nuevo ----
+    st.markdown("---")
+    st.subheader("📤 Cargar un proyecto formativo")
+    archivo = st.file_uploader("PDF del reporte del proyecto formativo (formato GFPI-F-016)",
+                               type=["pdf"], key="pdf_proyecto")
+    if archivo is not None:
+        try:
+            with st.spinner("Procesando PDF..."):
+                proyecto = procesar_pdf_proyecto(archivo.getvalue())
+
+            st.success(f"✅ PDF procesado. Se detectaron **{len(proyecto.get('fases', []))} fases**, "
+                       f"**{len(proyecto.get('competencias_agrupadas', []))} competencias únicas** "
+                       f"y **{proyecto.get('total_filas', 0)} filas** en la tabla de planeación.")
+
+            # Vista previa
+            st.markdown("### Vista previa")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Código Proyecto SOFIA:** {proyecto.get('codigo_proyecto_sofia', 'N/A')}")
+                st.markdown(f"**Código Programa SOFIA:** {proyecto.get('codigo_programa_sofia', 'N/A')}")
+                st.markdown(f"**Versión:** {proyecto.get('version_programa', 'N/A')}")
+                st.markdown(f"**Fichas asociadas:** {proyecto.get('fichas_asociadas', 'N/A')}")
+                st.markdown(f"**Tiempo:** {proyecto.get('tiempo_meses', 'N/A')} meses")
+            with col2:
+                st.markdown(f"**Programa:** {proyecto.get('programa_formacion', '')}")
+                st.markdown(f"**Centro:** {proyecto.get('centro_formacion', '')}")
+                st.markdown(f"**Regional:** {proyecto.get('regional', '')}")
+
+            st.markdown(f"**Nombre del proyecto:**")
+            st.markdown(f"> {proyecto.get('nombre_proyecto', '')}")
+
+            # Preview de fases
+            with st.expander("🔍 Ver estructura completa (fases, actividades, competencias, RAPs)"):
+                for fase in proyecto.get("fases", []):
+                    st.markdown(f"### {fase['nombre']}")
+                    for act in fase.get("actividades", []):
+                        st.markdown(f"**📌 {act['nombre']}**")
+                        for comp in act.get("competencias", []):
+                            st.markdown(f"  - `{comp['codigo']}` — {comp['nombre']}")
+                            for rap in comp.get("raps", []):
+                                st.markdown(f"    - `{rap['codigo']}` — {rap['nombre']}")
+
+            # Botón guardar
+            col_a, col_b = st.columns([2, 1])
+            with col_a:
+                if st.button("💾 Guardar proyecto formativo en la app",
+                             type="primary", use_container_width=True):
+                    agregar_o_actualizar_proyecto(PROYECTOS_FILE, proyecto)
+                    st.success("✅ Proyecto guardado. Ya puedes usarlo en Nueva Guía y Planeación Pedagógica.")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Error procesando el PDF: {e}")
+            st.exception(e)
+
+    # ---- Proyectos guardados ----
+    st.markdown("---")
+    st.subheader("💾 Proyectos formativos guardados")
+    proyectos = cargar_proyectos(PROYECTOS_FILE)
+    if not proyectos:
+        st.info("Aún no has cargado ningún proyecto formativo. Sube el PDF arriba.")
+        return
+
+    for i, proy in enumerate(proyectos):
+        with st.expander(
+            f"📘 [{proy.get('codigo_proyecto_sofia', '?')}] {proy.get('nombre_proyecto', 'Sin nombre')[:80]}",
+            expanded=False
+        ):
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.markdown(f"**Programa:** {proy.get('programa_formacion', '')}")
+                st.markdown(f"**Código Programa SOFIA:** {proy.get('codigo_programa_sofia', '')}  ·  "
+                            f"**Versión:** {proy.get('version_programa', '')}  ·  "
+                            f"**Duración:** {proy.get('tiempo_meses', '')} meses")
+                st.markdown(f"**Fases:** {len(proy.get('fases', []))}  ·  "
+                            f"**Competencias:** {len(proy.get('competencias_agrupadas', []))}  ·  "
+                            f"**Total filas:** {proy.get('total_filas', 0)}")
+            with c2:
+                if st.button("🗑️ Eliminar", key=f"del_proy_{i}"):
+                    eliminar_proyecto(PROYECTOS_FILE, proy.get("codigo_proyecto_sofia", ""))
+                    st.rerun()
+
+
+# ============ HELPERS DE PROYECTOS FORMATIVOS ============
+def obtener_proyecto_por_codigo(codigo: str) -> dict:
+    """Retorna el proyecto formativo por código SOFIA, o dict vacío."""
+    proyectos = cargar_proyectos(PROYECTOS_FILE)
+    for p in proyectos:
+        if p.get("codigo_proyecto_sofia") == codigo:
+            return p
+    return {}
+
+
+def selector_cascada_proyecto(key_prefix: str = "sel"):
+    """Widget de dropdowns cascada: Proyecto → Fase → Actividad → Competencia.
+    Retorna un dict con los valores seleccionados y los RAPs de la competencia.
+    """
+    proyectos = cargar_proyectos(PROYECTOS_FILE)
+    if not proyectos:
+        st.warning("⚠️ No hay proyectos formativos cargados. Ve a **📄 Proyectos Formativos** primero.")
+        return {}
+
+    # Selector de proyecto
+    opciones_proy = ["— Seleccionar proyecto —"] + [
+        f"[{p.get('codigo_proyecto_sofia', '?')}] {p.get('programa_formacion', '')[:50]}"
+        for p in proyectos
+    ]
+    idx = st.selectbox("📘 Proyecto Formativo", range(len(opciones_proy)),
+                        format_func=lambda i: opciones_proy[i], key=f"{key_prefix}_proy")
+    if idx == 0:
+        return {}
+    proyecto = proyectos[idx - 1]
+
+    # Selector de fase
+    fases = proyecto.get("fases", [])
+    if not fases:
+        st.warning("Este proyecto no tiene fases detectadas.")
+        return {"proyecto": proyecto}
+    opciones_fase = ["— Seleccionar fase —"] + [f["nombre"] for f in fases]
+    idx_fase = st.selectbox("📅 Fase del Proyecto", range(len(opciones_fase)),
+                             format_func=lambda i: opciones_fase[i], key=f"{key_prefix}_fase")
+    if idx_fase == 0:
+        return {"proyecto": proyecto}
+    fase = fases[idx_fase - 1]
+
+    # Selector de actividad
+    actividades = fase.get("actividades", [])
+    opciones_act = ["— Seleccionar actividad —"] + [
+        (a["nombre"][:100] + "..." if len(a["nombre"]) > 100 else a["nombre"])
+        for a in actividades
+    ]
+    idx_act = st.selectbox("📌 Actividad del Proyecto", range(len(opciones_act)),
+                            format_func=lambda i: opciones_act[i], key=f"{key_prefix}_act")
+    if idx_act == 0:
+        return {"proyecto": proyecto, "fase": fase}
+    actividad = actividades[idx_act - 1]
+
+    # Selector de competencia
+    competencias = actividad.get("competencias", [])
+    opciones_comp = ["— Seleccionar competencia —"] + [
+        f"[{c['codigo']}] {c['nombre'][:70]}" for c in competencias
+    ]
+    idx_comp = st.selectbox("🎯 Competencia", range(len(opciones_comp)),
+                             format_func=lambda i: opciones_comp[i], key=f"{key_prefix}_comp")
+    if idx_comp == 0:
+        return {"proyecto": proyecto, "fase": fase, "actividad": actividad}
+    competencia = competencias[idx_comp - 1]
+
+    # Mostrar RAPs asociados
+    raps = competencia.get("raps", [])
+    if raps:
+        st.markdown(f"**RAPs asociados ({len(raps)}):**")
+        for rap in raps:
+            st.markdown(f"  - `{rap['codigo']}` — {rap['nombre']}")
+
+    return {
+        "proyecto": proyecto,
+        "fase": fase,
+        "actividad": actividad,
+        "competencia": competencia,
+        "raps": raps,
+    }
+
+
 # ============ HELPERS ============
 def _extraer_codigo(competencia_str: str) -> str:
     m = re.search(r"(\d{6,})", competencia_str)
@@ -1828,6 +2111,8 @@ elif seccion == "📋 Planes de Trabajo":
     seccion_planes_trabajo()
 elif seccion == "🗓️ Planeación Pedagógica":
     seccion_planeacion_pedagogica()
+elif seccion == "📄 Proyectos Formativos":
+    seccion_proyectos_formativos()
 elif seccion == "🤖 Configurar IA":
     seccion_configurar_ia()
 elif seccion == "✉️ Configurar correo":
