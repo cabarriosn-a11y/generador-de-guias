@@ -1,5 +1,5 @@
 """
-Generador de Guías de Aprendizaje SENA — instructor Sena
+Generador de Guías de Aprendizaje SENA — ProfeNaturales
 Con integración de IA (Gemini) para generar contenido automáticamente.
 
 Cambios importantes vs versión anterior:
@@ -40,7 +40,7 @@ from generadores.ia import (
 
 # ============ CONFIG ============
 st.set_page_config(
-    page_title="Generador Guías SENA — Instructor Sena",
+    page_title="Generador Guías SENA — ProfeNaturales",
     page_icon="📘",
     layout="wide",
 )
