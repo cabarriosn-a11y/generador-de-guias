@@ -32,6 +32,7 @@ from generadores.excel_portafolio import generar_excel_portafolio
 from generadores.email_sender import (
     enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
 )
+from generadores.planeacion_pedagogica import generar_planeacion
 from generadores.ia import (
     GeminiCliente, GEMINI_DISPONIBLE,
     PROMPTS_DEFAULT, cargar_prompts, guardar_prompts, restablecer_prompt,
@@ -59,6 +60,10 @@ PROMPTS_FILE = DATA_DIR / "prompts.json"
 PLANES_DIR = DATA_DIR / "planes_trabajo"
 PLANES_DIR.mkdir(exist_ok=True)
 APRENDICES_FILE = DATA_DIR / "aprendices.json"
+
+# Planeaciones pedagógicas
+PLANEACIONES_DIR = DATA_DIR / "planeaciones"
+PLANEACIONES_DIR.mkdir(exist_ok=True)
 
 
 # ============ RATE LIMITING VISUALES ============
@@ -231,6 +236,7 @@ def init_state():
         "raps_guardados": cargar_raps(),
         "ultimos_archivos": {},  # {tipo: path} de archivos generados en la última corrida
         "competencia_seleccionada_key": None,  # para saber si cambió y auto-llenar
+        "planeacion_filas": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -247,7 +253,7 @@ with st.sidebar:
     st.markdown("---")
     seccion = st.radio(
         "Navegación",
-        ["🆕 Nueva guía", "📋 Planes de Trabajo",
+        ["🆕 Nueva guía", "📋 Planes de Trabajo", "🗓️ Planeación Pedagógica",
          "🤖 Configurar IA", "✉️ Configurar correo",
          "🎨 Prompts de la IA", "⚙️ Cargar competencias",
          "💾 Guías guardadas", "📚 RAPs guardados", "ℹ️ Ayuda"],
@@ -567,7 +573,8 @@ def seccion_nueva_guia():
         rap_focal = st.selectbox("¿Qué RAP trabaja principalmente esta guía?",
                                  ["Todos"] + [f"RAP {i+1}" for i in range(n_raps)])
     with col2:
-        autor = st.text_input("Autor (instructor)", value=cfg.get("autor_default", "Carlos"))
+        autor = st.text_input("Autor (instructor)",
+                              value=cfg.get("smtp_nombre") or cfg.get("autor_default", "Carlos"))
         fecha_str = st.date_input("Fecha", value=date.today()).isoformat()
 
     # -- Ejecutar "Generar TODO" si se pulsó --
@@ -798,19 +805,24 @@ def _generar_los_tres_documentos(programa, codigo_prog, proyecto, fase, activida
             "rubricas": p_rubricas,
         }
 
-        # Historial
+        # Historial - guardar TODOS los datos para que el Plan de Trabajo los tenga
         guias = cargar_guias_historial()
         guias.append({
             "fecha": fecha_str,
             "timestamp": timestamp,
             "programa": programa,
+            "codigo_programa": codigo_prog,
+            "proyecto_formativo": proyecto,
+            "actividad_proyecto": actividad_proyecto,
             "competencia": competencia,
+            "codigo_competencia": codigo_comp,
             "fase": fase,
             "rap_focal": rap_focal,
             "autor": autor,
             "archivo_aprendiz": p_aprendiz,
             "archivo_instructor": p_instructor,
             "archivo_rubricas": p_rubricas,
+            "raps": [r for r in raps_input if r],
         })
         guardar_guias_historial(guias)
 
@@ -1303,7 +1315,7 @@ def _procesar_planes(aprendices, guia, actividades, fecha_inicio, fecha_final, e
         "fase_proyecto": guia.get("fase", ""),
     }
     instructor = {
-        "nombre": cfg.get("autor_default", "Instructor SENA"),
+        "nombre": cfg.get("smtp_nombre") or cfg.get("autor_default", "Instructor SENA"),
         "cargo": "Instructor",
     }
 
@@ -1545,6 +1557,8 @@ Se guardan permanentemente y aplican a todas las futuras guías.
                      "Genera la lista de términos clave."),
         "referentes": ("🔗 Prompt de Referentes bibliográficos",
                        "Genera la lista de fuentes bibliográficas."),
+        "planeacion": ("🗓️ Prompt de Planeación Pedagógica",
+                       "Genera saberes, criterios de evaluación y campos técnicos del formato GFPI-F-134."),
     }
 
     for clave, (titulo, descripcion) in etiquetas.items():
@@ -1593,6 +1607,196 @@ Descarga la plantilla de ejemplo desde **⚙️ Cargar competencias**.
 """)
 
 
+# ============ SECCIÓN: PLANEACIÓN PEDAGÓGICA ============
+def seccion_planeacion_pedagogica():
+    st.header("🗓️ Planeación Pedagógica (GFPI-F-134)")
+    st.caption("Genera el formato oficial de planeación por fase del proyecto formativo. "
+               "Cada fase puede contener múltiples competencias.")
+
+    st.subheader("1. Datos generales")
+    cfg = cargar_config()
+    col1, col2 = st.columns(2)
+    with col1:
+        fecha_elab = st.date_input("Fecha de elaboración", value=date.today(),
+                                    key="plan_fecha").isoformat()
+        programa = st.text_input("Denominación del Programa",
+                                  value="Técnico en Integración de Operaciones Logísticas",
+                                  key="plan_programa")
+        modalidad = st.selectbox("Modalidad", ["Presencial", "Virtual", "A distancia", "Mixta"],
+                                  key="plan_modalidad")
+        codigo_programa = st.text_input("Código y versión del Programa",
+                                         value="137136 - Versión 1", key="plan_cod_prog")
+    with col2:
+        proyecto = st.text_area("Nombre del Proyecto Formativo", height=100, key="plan_proy",
+                                 value="REGISTRAR EL DESARROLLO DE LAS OPERACIONES DE TRANSPORTE, "
+                                       "ALMACENAMIENTO, DISTRIBUCIÓN, MANEJO Y CONTROL DE INVENTARIOS "
+                                       "EN EL DEPARTAMENTO DE MANTENIMIENTO DE LA EMPRESA "
+                                       "CARBONES DEL CERREJÓN LIMITED")
+        codigo_proy = st.text_input("Código del Proyecto",
+                                     value="PF-CERREJON-2026-01", key="plan_cod_proy")
+        equipo = st.text_input("Equipo Curricular",
+                                value=cfg.get("smtp_nombre") or cfg.get("autor_default", "Carlos Barrios"),
+                                key="plan_equipo")
+        regional = st.text_input("Regional y Centro de Formación",
+                                  value="Regional Guajira - Centro Industrial y de Energías Alternativas",
+                                  key="plan_regional")
+
+    st.subheader("2. Filas de la tabla (una por competencia)")
+    st.caption("Cada fila es una competencia dentro de una fase. Puedes tener varias "
+               "competencias en la misma fase, o repartirlas entre fases distintas.")
+
+    if not st.session_state.get("planeacion_filas"):
+        st.session_state.planeacion_filas = [_fila_planeacion_vacia()]
+
+    cli_ia = obtener_cliente_ia()
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("➕ Agregar fila", use_container_width=True):
+            st.session_state.planeacion_filas.append(_fila_planeacion_vacia())
+            st.rerun()
+    with col_b:
+        if st.button("🗑️ Eliminar última fila", use_container_width=True,
+                     disabled=len(st.session_state.planeacion_filas) <= 1):
+            st.session_state.planeacion_filas.pop()
+            st.rerun()
+
+    filas_editadas = []
+    for i, fila in enumerate(st.session_state.planeacion_filas):
+        with st.expander(f"📋 Fila {i+1} — {fila.get('competencia', 'Nueva competencia')[:60]}",
+                         expanded=(i == 0)):
+            c1, c2 = st.columns(2)
+            with c1:
+                fases_opts = ["Análisis", "Planear", "Ejecución", "Evaluación"]
+                fase = st.selectbox("Fase", fases_opts, key=f"pln_fase_{i}",
+                    index=fases_opts.index(fila.get("fase", "Planear")))
+                actividad_proy = st.text_area("Actividad del Proyecto Formativo",
+                    value=fila.get("actividad_proyecto", ""), height=80, key=f"pln_act_{i}")
+                competencia = st.text_area("Competencia (código + nombre)",
+                    value=fila.get("competencia", ""), height=80, key=f"pln_comp_{i}")
+                raps_texto = st.text_area("Resultados de Aprendizaje (uno por línea)",
+                    value=fila.get("raps", ""), height=120, key=f"pln_raps_{i}")
+            with c2:
+                horas_dir = st.number_input("Horas trabajo directo", 0, 200,
+                    value=int(fila.get("horas_directas", 48)), key=f"pln_hd_{i}")
+                horas_ind = st.number_input("Horas trabajo independiente", 0, 200,
+                    value=int(fila.get("horas_independientes", 48)), key=f"pln_hi_{i}")
+
+            if cli_ia:
+                if st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
+                              key=f"pln_ia_{i}", use_container_width=True):
+                    with st.spinner("La IA está diseñando los campos..."):
+                        try:
+                            datos_ia = {
+                                "programa": programa, "fase": fase,
+                                "proyecto_formativo": proyecto,
+                                "actividad_proyecto": actividad_proy,
+                                "competencia": competencia,
+                                "raps": [r.strip() for r in raps_texto.splitlines() if r.strip()],
+                            }
+                            resultado = cli_ia.generar_planeacion(datos_ia)
+                            for k in ("saberes_conceptos", "saberes_proceso", "criterios_evaluacion",
+                                     "actividades_aprendizaje", "descripcion_evidencia",
+                                     "estrategias_didacticas", "ambiente", "materiales"):
+                                if k in resultado:
+                                    st.session_state[f"pln_{k}_{i}"] = str(resultado[k])
+                            if "horas_directas" in resultado:
+                                st.session_state[f"pln_hd_{i}"] = int(resultado["horas_directas"])
+                            if "horas_independientes" in resultado:
+                                st.session_state[f"pln_hi_{i}"] = int(resultado["horas_independientes"])
+                            st.session_state.planeacion_filas[i].update(resultado)
+                            st.success("✅ Campos generados por IA.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+            c3, c4 = st.columns(2)
+            with c3:
+                saberes_c = st.text_area("Saberes de Conceptos y Principios",
+                    value=fila.get("saberes_conceptos", ""), height=100,
+                    key=f"pln_saberes_conceptos_{i}")
+                saberes_p = st.text_area("Saberes de Proceso",
+                    value=fila.get("saberes_proceso", ""), height=100,
+                    key=f"pln_saberes_proceso_{i}")
+                criterios = st.text_area("Criterios de Evaluación",
+                    value=fila.get("criterios_evaluacion", ""), height=140,
+                    key=f"pln_criterios_evaluacion_{i}")
+                actividades_apr = st.text_area("Actividades de Aprendizaje",
+                    value=fila.get("actividades_aprendizaje", ""), height=100,
+                    key=f"pln_actividades_aprendizaje_{i}")
+            with c4:
+                evidencia = st.text_area("Descripción de la Evidencia",
+                    value=fila.get("descripcion_evidencia", ""), height=100,
+                    key=f"pln_descripcion_evidencia_{i}")
+                estrategias = st.text_area("Estrategias Didácticas Activas",
+                    value=fila.get("estrategias_didacticas", ""), height=100,
+                    key=f"pln_estrategias_didacticas_{i}")
+                ambiente = st.text_input("Ambiente",
+                    value=fila.get("ambiente", ""), key=f"pln_ambiente_{i}")
+                materiales = st.text_area("Materiales de Formación",
+                    value=fila.get("materiales", ""), height=80, key=f"pln_materiales_{i}")
+                instructores = st.text_input("Instructores Responsables",
+                    value=fila.get("instructores",
+                                   cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
+                    key=f"pln_ins_{i}")
+                observaciones = st.text_input("Observaciones",
+                    value=fila.get("observaciones", ""), key=f"pln_obs_{i}")
+
+            filas_editadas.append({
+                "fase": fase, "actividad_proyecto": actividad_proy,
+                "competencia": competencia, "raps": raps_texto,
+                "saberes_conceptos": saberes_c, "saberes_proceso": saberes_p,
+                "criterios_evaluacion": criterios, "actividades_aprendizaje": actividades_apr,
+                "horas_directas": horas_dir, "horas_independientes": horas_ind,
+                "descripcion_evidencia": evidencia, "estrategias_didacticas": estrategias,
+                "ambiente": ambiente, "materiales": materiales,
+                "instructores": instructores, "observaciones": observaciones,
+            })
+
+    st.session_state.planeacion_filas = filas_editadas
+    st.markdown("---")
+
+    if st.button("🚀 Generar Planeación Pedagógica (Excel)",
+                  type="primary", use_container_width=True):
+        datos = {
+            "fecha_elaboracion": fecha_elab, "programa": programa,
+            "modalidad": modalidad, "codigo_programa": codigo_programa,
+            "proyecto_formativo": proyecto, "codigo_proyecto": codigo_proy,
+            "equipo_curricular": equipo, "regional_centro": regional,
+            "filas": filas_editadas,
+        }
+        try:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe = re.sub(r"[^\w]", "_", programa)[:30]
+            ruta = str(PLANEACIONES_DIR / f"Planeacion_{safe}_{ts}.xlsx")
+            with st.spinner("Generando planeación..."):
+                generar_planeacion(datos, ruta)
+            st.session_state.ultimo_archivo_planeacion = ruta
+            st.success("✅ Planeación generada.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.exception(e)
+
+    if st.session_state.get("ultimo_archivo_planeacion"):
+        ruta = st.session_state.ultimo_archivo_planeacion
+        if Path(ruta).exists():
+            with open(ruta, "rb") as f:
+                st.download_button("⬇️ Descargar Planeación Pedagógica",
+                    f.read(), file_name=Path(ruta).name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True)
+
+
+def _fila_planeacion_vacia():
+    return {
+        "fase": "Planear", "actividad_proyecto": "", "competencia": "", "raps": "",
+        "saberes_conceptos": "", "saberes_proceso": "", "criterios_evaluacion": "",
+        "actividades_aprendizaje": "", "horas_directas": 48, "horas_independientes": 48,
+        "descripcion_evidencia": "", "estrategias_didacticas": "",
+        "ambiente": "", "materiales": "", "instructores": "", "observaciones": "",
+    }
+
+
 # ============ HELPERS ============
 def _extraer_codigo(competencia_str: str) -> str:
     m = re.search(r"(\d{6,})", competencia_str)
@@ -1622,6 +1826,8 @@ if seccion == "🆕 Nueva guía":
     seccion_nueva_guia()
 elif seccion == "📋 Planes de Trabajo":
     seccion_planes_trabajo()
+elif seccion == "🗓️ Planeación Pedagógica":
+    seccion_planeacion_pedagogica()
 elif seccion == "🤖 Configurar IA":
     seccion_configurar_ia()
 elif seccion == "✉️ Configurar correo":
