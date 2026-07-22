@@ -1176,7 +1176,7 @@ def _tab_guia_cronograma():
     for i, g in enumerate(reversed(guias)):
         opciones_guias.append(f"{g.get('fecha', '')} · {g.get('programa', '')[:50]}")
 
-    idx = st.selectbox("Guía a asignar", range(len(opciones_guias)),
+    idx = st.selectbox("Guía a asignar", list(range(len(opciones_guias))),
                         format_func=lambda i: opciones_guias[i])
     guia_seleccionada = list(reversed(guias))[idx]
     st.session_state.plan_guia = guia_seleccionada
@@ -1682,13 +1682,13 @@ def seccion_planeacion_pedagogica():
                 f"[{p.get('codigo_proyecto_sofia', '?')}] {p.get('programa_formacion', '')[:60]}"
                 for p in proyectos_disponibles
             ]
-            idx_p = st.selectbox("Proyecto formativo", range(len(proyectos_lista)),
+            idx_p = st.selectbox("Proyecto formativo", list(range(len(proyectos_lista))),
                                   format_func=lambda i: proyectos_lista[i], key="pln_proy_sel")
             if idx_p > 0:
                 proy_sel = proyectos_disponibles[idx_p - 1]
 
                 fases_disponibles = ["— Ninguna —"] + [f["nombre"] for f in proy_sel.get("fases", [])]
-                idx_f = st.selectbox("Fase a autocompletar", range(len(fases_disponibles)),
+                idx_f = st.selectbox("Fase a autocompletar", list(range(len(fases_disponibles))),
                                       format_func=lambda i: fases_disponibles[i], key="pln_fase_sel")
 
                 if idx_f > 0:
@@ -2219,7 +2219,7 @@ def selector_cascada_proyecto(key_prefix: str = "sel"):
         f"[{p.get('codigo_proyecto_sofia', '?')}] {p.get('programa_formacion', '')[:50]}"
         for p in proyectos
     ]
-    idx = st.selectbox("📘 Proyecto Formativo", range(len(opciones_proy)),
+    idx = st.selectbox("📘 Proyecto Formativo", list(range(len(opciones_proy))),
                         format_func=lambda i: opciones_proy[i], key=f"{key_prefix}_proy")
     if idx == 0:
         return {}
@@ -2231,7 +2231,7 @@ def selector_cascada_proyecto(key_prefix: str = "sel"):
         st.warning("Este proyecto no tiene fases detectadas.")
         return {"proyecto": proyecto}
     opciones_fase = ["— Seleccionar fase —"] + [f["nombre"] for f in fases]
-    idx_fase = st.selectbox("📅 Fase del Proyecto", range(len(opciones_fase)),
+    idx_fase = st.selectbox("📅 Fase del Proyecto", list(range(len(opciones_fase))),
                              format_func=lambda i: opciones_fase[i], key=f"{key_prefix}_fase")
     if idx_fase == 0:
         return {"proyecto": proyecto}
@@ -2243,7 +2243,7 @@ def selector_cascada_proyecto(key_prefix: str = "sel"):
         (a["nombre"][:100] + "..." if len(a["nombre"]) > 100 else a["nombre"])
         for a in actividades
     ]
-    idx_act = st.selectbox("📌 Actividad del Proyecto", range(len(opciones_act)),
+    idx_act = st.selectbox("📌 Actividad del Proyecto", list(range(len(opciones_act))),
                             format_func=lambda i: opciones_act[i], key=f"{key_prefix}_act")
     if idx_act == 0:
         return {"proyecto": proyecto, "fase": fase}
@@ -2254,7 +2254,7 @@ def selector_cascada_proyecto(key_prefix: str = "sel"):
     opciones_comp = ["— Seleccionar competencia —"] + [
         f"[{c['codigo']}] {c['nombre'][:70]}" for c in competencias
     ]
-    idx_comp = st.selectbox("🎯 Competencia", range(len(opciones_comp)),
+    idx_comp = st.selectbox("🎯 Competencia", list(range(len(opciones_comp))),
                              format_func=lambda i: opciones_comp[i], key=f"{key_prefix}_comp")
     if idx_comp == 0:
         return {"proyecto": proyecto, "fase": fase, "actividad": actividad}
