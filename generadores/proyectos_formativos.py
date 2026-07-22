@@ -96,59 +96,227 @@ def parsear_tabla_planeacion(texto: str) -> list:
 
     seccion = texto[inicio:fin]
 
-    # Fases válidas
-    fases_validas = {"ANÁLISIS", "PLANEACIÓN", "EJECUCIÓN", "EVALUACIÓN",
-                     "ANALISIS", "PLANEACION", "EJECUCION", "EVALUACION"}
+    # ★ ESTRATEGIA DINÁMICA (funciona con cualquier programa SENA):
+    # Cada fila del PDF tiene esta estructura:
+    #   FASE (línea corta en mayúsculas)
+    #   ACTIVIDAD (varias líneas en mayúsculas)
+    #   codigo_RAP - texto RAP (varias líneas)
+    #   codigo_competencia - texto competencia (varias líneas)
+    #
+    # Para cada par (RAP + competencia), buscamos hacia atrás la fase (línea corta
+    # en mayúsculas) y todo lo que hay entre la fase y el RAP es la actividad.
 
-    # Estrategia: partir el texto en bloques que empiezan con FASE
-    # y contienen ACTIVIDAD + RAP + COMPETENCIA
-    # Usamos regex de "look-behind" y "look-ahead" con fases
-
-    # Regex para encontrar cada fila de la tabla:
-    # (FASE) (ACTIVIDAD - texto en mayúsculas) (código_rap - texto_rap) (código_competencia - texto_competencia)
-    patron_fila = re.compile(
-        r"(?P<fase>ANÁLISIS|PLANEACIÓN|EJECUCIÓN|EVALUACIÓN|ANALISIS|PLANEACION|EJECUCION|EVALUACION)"
-        r"\s+"
-        r"(?P<actividad>.+?)"
-        r"\s+"
+    patron_rap_comp = re.compile(
         r"(?P<codigo_rap>\d{6})\s*-\s*"
         r"(?P<nombre_rap>.+?)"
         r"\s+"
         r"(?P<codigo_comp>\d{9})\s*-\s*"
         r"(?P<nombre_comp>.+?)"
-        r"(?=(?:ANÁLISIS|PLANEACIÓN|EJECUCIÓN|EVALUACIÓN|ANALISIS|PLANEACION|EJECUCION|EVALUACION|\Z|3\.5|3\.6|3\.7|4\.|5\.))",
+        r"(?=\d{6}\s*-|\Z|3\.5|3\.6|3\.7|4\.|5\.)",
         re.DOTALL
     )
 
     filas = []
-    for m in patron_fila.finditer(seccion):
-        fase = m.group("fase").strip()
-        actividad = _limpiar(m.group("actividad"))
+
+    # Para la primera fila, el contexto es todo lo que hay ANTES del primer match
+    matches = list(patron_rap_comp.finditer(seccion))
+    if not matches:
+        return []
+
+    contexto_inicial = seccion[:matches[0].start()]
+    fase_actual, actividad_actual = _detectar_fase_y_actividad(contexto_inicial)
+
+    for i, m in enumerate(matches):
         codigo_rap = m.group("codigo_rap").strip()
         nombre_rap = _limpiar(m.group("nombre_rap"))
         codigo_comp = m.group("codigo_comp").strip()
-        nombre_comp = _limpiar(m.group("nombre_comp"))
+        nombre_comp_raw = m.group("nombre_comp")
 
-        # Filtrar líneas basura de página / encabezado
-        if any(basura in actividad for basura in ["Página", "GFPI-", "SERVICIO NACIONAL", "Modelo de Mejora"]):
-            # Intentar limpiar
-            actividad = re.sub(r"Página\s+\d+\s+de\s*\d+.*?GFPI[^\n]*", "", actividad)
-            actividad = re.sub(r"SERVICIO NACIONAL[^\n]*", "", actividad)
-            actividad = _limpiar(actividad)
+        # Del final del nombre_comp capturado, separar la fase+actividad de la SIGUIENTE fila
+        nombre_comp_limpio, fase_sig, actividad_sig = _separar_fase_del_final(nombre_comp_raw)
 
-        # Normalizar fase (todas con tilde)
-        fase = _normalizar_fase(fase)
-
+        # Guardar la fila actual
         filas.append({
-            "fase": fase,
-            "actividad": actividad,
+            "fase": fase_actual,
+            "actividad": actividad_actual,
             "codigo_rap": codigo_rap,
             "nombre_rap": nombre_rap,
             "codigo_competencia": codigo_comp,
-            "nombre_competencia": nombre_comp,
+            "nombre_competencia": _limpiar(nombre_comp_limpio),
         })
 
+        # Actualizar fase/actividad para la siguiente iteración
+        if fase_sig:
+            fase_actual = fase_sig
+        if actividad_sig:
+            actividad_actual = actividad_sig
+
     return filas
+
+
+def _es_nombre_fase_tipico(linea: str) -> bool:
+    """True si la línea coincide con un nombre típico de fase SENA."""
+    # Normalizar: mayúsculas, sin tildes, sin espacios
+    norm = linea.upper().strip().rstrip('.').rstrip(':')
+    norm_sin_tildes = (norm.replace("Á", "A").replace("É", "E").replace("Í", "I")
+                          .replace("Ó", "O").replace("Ú", "U").replace("Ñ", "N"))
+    # Diccionario de nombres típicos de fase en proyectos formativos SENA
+    fases_tipicas = {
+        "ANALISIS", "PLANEACION", "PLANEAR",
+        "EJECUCION", "EJECUTAR",
+        "EVALUACION", "EVALUAR",
+        "DISENO", "DIAGNOSTICO", "DEFINICION",
+        "IDENTIFICACION", "IMPLEMENTACION",
+        "VERIFICACION", "DESARROLLO",
+        "CONCEPTUALIZACION", "ORGANIZACION",
+        "FORMULACION", "PROGRAMACION",
+        "OPERACION", "CONTROL",
+        "REVISION", "SEGUIMIENTO",
+    }
+    return norm_sin_tildes in fases_tipicas
+
+
+# Palabras que SUELEN ser continuación (no fases) — para evitar falsos positivos
+_PALABRAS_NO_FASE = {
+    "ORGANIZACIÓN", "ORGANIZACION",  # aparece en "EN LA ORGANIZACIÓN"
+    "EMPRESA", "ENTIDAD",
+    "SECTOR", "CONTEXTO",
+    "NORMATIVA", "POLÍTICA", "POLITICA",
+    "TECNOLOGÍA", "TECNOLOGIA",
+    "INSTITUCIÓN", "INSTITUCION",
+    "COMUNIDAD", "SOCIEDAD",
+}
+
+
+def _es_probable_fase(linea: str) -> bool:
+    """True si la línea es una fase (por heurística estricta)."""
+    linea = linea.strip()
+    palabras = linea.split()
+    # Debe ser corta, sin dígitos largos, mayoritariamente en mayúsculas
+    if not (1 <= len(palabras) <= 3 and len(linea) <= 25 and _es_mayus(linea)):
+        return False
+    if re.search(r"\d{4,}", linea):
+        return False
+    # Filtrar palabras que suelen ser continuación de una frase
+    if linea.upper().strip().rstrip('.') in _PALABRAS_NO_FASE:
+        return False
+    # Primero, si coincide con el diccionario típico, es fase
+    if _es_nombre_fase_tipico(linea):
+        return True
+    # Si es UNA sola palabra y no está en la lista de exclusión, es candidata
+    if len(palabras) == 1 and len(linea) >= 4:
+        return True
+    return False
+
+
+def _separar_fase_del_final(nombre_comp_raw: str):
+    """Del final del nombre_comp capturado, separar la fase+actividad de la siguiente fila.
+    Retorna (nombre_comp_real, fase_siguiente, actividad_siguiente).
+    """
+    if not nombre_comp_raw:
+        return "", None, None
+
+    lineas = [l.strip() for l in nombre_comp_raw.split("\n") if l.strip()]
+    lineas = [l for l in lineas if not _es_basura(l)]
+    if not lineas:
+        return "", None, None
+
+    # Buscar de atrás hacia adelante la ÚLTIMA fase real (según _es_probable_fase)
+    idx_fase = -1
+    for i in range(len(lineas) - 1, -1, -1):
+        if _es_probable_fase(lineas[i]):
+            idx_fase = i
+            break
+
+    if idx_fase == -1:
+        return " ".join(lineas), None, None
+
+    # nombre_comp real: líneas antes de la fase
+    nombre_comp_real = " ".join(lineas[:idx_fase])
+    fase_siguiente = lineas[idx_fase]
+    actividad_siguiente = _limpiar(" ".join(lineas[idx_fase + 1:]))
+    if len(actividad_siguiente) < 20:
+        actividad_siguiente = None
+    return nombre_comp_real, fase_siguiente, actividad_siguiente
+
+
+def _detectar_fase_y_actividad(contexto: str):
+    """Detecta (fase, actividad) en el texto que aparece justo antes del primer RAP."""
+    if not contexto or not contexto.strip():
+        return None, None
+
+    contexto_limpio = _limpiar_basura_pdf(contexto)
+    lineas = [l.strip() for l in contexto_limpio.split("\n") if l.strip()]
+    lineas = [l for l in lineas if not _es_basura(l)]
+    if not lineas:
+        return None, None
+
+    fase = None
+    idx_fase = -1
+    for i, linea in enumerate(lineas):
+        if _es_probable_fase(linea):
+            fase = linea
+            idx_fase = i
+            break
+
+    # Fallback: intentar separar "FASE" pegada al inicio de la actividad
+    if fase is None and lineas:
+        primera = lineas[0]
+        m = re.match(r"^([A-ZÁÉÍÓÚÑ]{4,20})([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ\s]{20,})$", primera)
+        if m:
+            posible_fase = m.group(1)
+            if _es_probable_fase(posible_fase):
+                fase = posible_fase
+                resto = m.group(2) + " " + " ".join(lineas[1:])
+                actividad = _limpiar(resto)
+                return fase, actividad if len(actividad) > 30 else None
+
+    if idx_fase >= 0:
+        candidato = " ".join(lineas[idx_fase + 1:])
+    else:
+        candidato = " ".join(lineas)
+    actividad = _limpiar(candidato)
+    if len(actividad) < 30:
+        actividad = None
+
+    return fase, actividad
+
+
+def _es_mayus(texto: str) -> bool:
+    """True si el texto está mayoritariamente en mayúsculas."""
+    letras = [c for c in texto if c.isalpha()]
+    if not letras:
+        return False
+    mayus = sum(1 for c in letras if c.isupper())
+    return mayus / len(letras) > 0.8
+
+
+def _es_basura(linea: str) -> bool:
+    """Detecta líneas de encabezado, pie de página, etc."""
+    basura_patrones = [
+        "Página", "GFPI-", "SERVICIO NACIONAL", "Modelo de Mejora",
+        "Sistema Integrado de Gestión",
+        "Procedimiento Ejecución de la Formación",
+        "PROYECTO FORMATIVO",
+        "3.1. Fases", "3.2. Actividades",
+        "3.3. Resultados", "3.4. Competencia",
+        "Fases del Proyecto", "Actividades del Proyecto",
+        "Resultados de Aprendizaje",
+        "Competencia Asociada",
+    ]
+    return any(p in linea for p in basura_patrones)
+
+
+def _limpiar_basura_pdf(texto: str) -> str:
+    """Elimina líneas basura del texto (encabezados repetidos, pies de página)."""
+    lineas_limpias = []
+    for linea in texto.split("\n"):
+        if not _es_basura(linea):
+            # También filtrar fechas y numeración
+            if re.match(r"^\d{2}/\d{2}/\d{2,4}\s*\d{1,2}:\d{2}", linea.strip()):
+                continue
+            lineas_limpias.append(linea)
+    return "\n".join(lineas_limpias)
 
 
 def _limpiar(texto: str) -> str:
@@ -281,9 +449,14 @@ def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
             "actividades": actividades_lista,
         })
 
-    # Ordenar fases en el orden estándar del SENA
-    orden_fases = {"ANÁLISIS": 1, "PLANEACIÓN": 2, "EJECUCIÓN": 3, "EVALUACIÓN": 4}
-    fases_lista.sort(key=lambda f: orden_fases.get(f["nombre"], 99))
+    # Preservar el orden en que las fases aparecieron en el PDF (usando el primer índice de cada fase)
+    orden_aparicion = {}
+    for i, f in enumerate(filas):
+        nombre_fase = f["fase"]
+        if nombre_fase and nombre_fase not in orden_aparicion:
+            orden_aparicion[nombre_fase] = i
+    # Ordenar la lista de fases según su primera aparición
+    fases_lista.sort(key=lambda f: orden_aparicion.get(f["nombre"], 99))
 
     # Consolidar todas las competencias del proyecto (para acceso rápido)
     todas_competencias = {}
