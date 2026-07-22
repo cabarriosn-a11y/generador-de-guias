@@ -37,6 +37,11 @@ from generadores.proyectos_formativos import (
     procesar_pdf as procesar_pdf_proyecto,
     cargar_proyectos, agregar_o_actualizar_proyecto, eliminar_proyecto,
 )
+from generadores.disenos_curriculares import (
+    procesar_pdf as procesar_pdf_diseno,
+    cargar_disenos, agregar_o_actualizar_diseno, eliminar_diseno,
+    buscar_competencia_por_codigo,
+)
 from generadores.ia import (
     GeminiCliente, GEMINI_DISPONIBLE,
     PROMPTS_DEFAULT, cargar_prompts, guardar_prompts, restablecer_prompt,
@@ -71,6 +76,9 @@ PLANEACIONES_DIR.mkdir(exist_ok=True)
 
 # Proyectos formativos parseados desde PDFs
 PROYECTOS_FILE = DATA_DIR / "proyectos_formativos.json"
+
+# Diseños curriculares parseados desde PDFs (fuente oficial de saberes y criterios)
+DISENOS_FILE = DATA_DIR / "disenos_curriculares.json"
 
 
 # ============ RATE LIMITING VISUALES ============
@@ -261,7 +269,7 @@ with st.sidebar:
     seccion = st.radio(
         "Navegación",
         ["🆕 Nueva guía", "📋 Planes de Trabajo", "🗓️ Planeación Pedagógica",
-         "📄 Proyectos Formativos",
+         "📄 Proyectos Formativos", "📚 Diseños Curriculares",
          "🤖 Configurar IA", "✉️ Configurar correo",
          "🎨 Prompts de la IA", "⚙️ Cargar competencias",
          "💾 Guías guardadas", "📚 RAPs guardados", "ℹ️ Ayuda"],
@@ -1869,8 +1877,27 @@ def seccion_planeacion_pedagogica():
                 if btn_ia:
                     with st.spinner("La IA está diseñando los campos técnicos... (~15 segundos)"):
                         try:
-                            # Buscar guías previas para alineación
+                            # 1) Buscar en el Diseño Curricular oficial por código de competencia
+                            codigo_comp = ""
+                            m_cod = re.search(r"(\d{6,9})", competencia)
+                            if m_cod:
+                                codigo_comp = m_cod.group(1)
+                            oficial = buscar_competencia_por_codigo(codigo_comp, DISENOS_FILE) if codigo_comp else {}
+
+                            # 2) Buscar guías previas para alineación
                             guias_relacionadas = _buscar_guias_de_competencia(competencia)
+
+                            # 3) Preparar contexto oficial (si hay coincidencia) para pasar a la IA
+                            datos_oficiales = {}
+                            if oficial:
+                                comp_of = oficial["competencia"]
+                                datos_oficiales = {
+                                    "saberes_conceptos_oficiales": comp_of.get("conocimientos_saber", []),
+                                    "saberes_proceso_oficiales": comp_of.get("conocimientos_proceso", []),
+                                    "criterios_evaluacion_oficiales": comp_of.get("criterios_evaluacion", []),
+                                    "duracion_oficial": comp_of.get("duracion_horas"),
+                                    "programa_oficial": oficial.get("programa", ""),
+                                }
 
                             datos_ia = {
                                 "programa": programa, "fase": fase,
@@ -1879,8 +1906,26 @@ def seccion_planeacion_pedagogica():
                                 "competencia": competencia,
                                 "raps": [r.strip() for r in raps_texto.splitlines() if r.strip()],
                                 "guias_relacionadas": guias_relacionadas,
+                                **datos_oficiales,
                             }
                             resultado = cli_ia.generar_planeacion(datos_ia)
+
+                            # 4) Si hay diseño oficial, SOBREESCRIBIR los 3 campos oficiales
+                            # (no importa lo que devolvió la IA, mandan los oficiales)
+                            if oficial and isinstance(resultado, dict):
+                                comp_of = oficial["competencia"]
+                                if comp_of.get("conocimientos_saber"):
+                                    resultado["saberes_conceptos"] = "\n".join(
+                                        f"• {s}" for s in comp_of["conocimientos_saber"]
+                                    )
+                                if comp_of.get("conocimientos_proceso"):
+                                    resultado["saberes_proceso"] = "\n".join(
+                                        f"• {s}" for s in comp_of["conocimientos_proceso"]
+                                    )
+                                if comp_of.get("criterios_evaluacion"):
+                                    resultado["criterios_evaluacion"] = "\n".join(
+                                        f"• {c}" for c in comp_of["criterios_evaluacion"]
+                                    )
 
                             # Contar campos aplicables
                             campos_ia = ("saberes_conceptos", "saberes_proceso",
@@ -1897,16 +1942,16 @@ def seccion_planeacion_pedagogica():
                                     else:
                                         no_aplicados.append(k)
 
-                            # ★ Guardar como PENDIENTE — se aplicará al inicio del próximo rerun
-                            # ANTES de que los widgets se instancien
+                            # Guardar como PENDIENTE — se aplicará al inicio del próximo rerun
                             st.session_state[f"pln_pendiente_ia_{i}"] = {
                                 "resultado": resultado,
                                 "guias_usadas": len(guias_relacionadas),
+                                "diseno_oficial_usado": bool(oficial),
+                                "programa_oficial": oficial.get("programa", "") if oficial else "",
                                 "competencia": competencia[:80],
                                 "aplicados": aplicados,
                                 "no_aplicados": no_aplicados,
                             }
-                            # También guardamos para el debug post-rerun
                             st.session_state[f"pln_ultimo_resultado_{i}"] = dict(
                                 st.session_state[f"pln_pendiente_ia_{i}"])
                             st.rerun()
@@ -1931,8 +1976,14 @@ def seccion_planeacion_pedagogica():
                         if aplicados:
                             msg = f"✅ IA aplicó {len(aplicados)} campo(s)"
                             if ultimo.get("guias_usadas", 0) > 0:
-                                msg += f" (con {ultimo['guias_usadas']} guía(s) previa(s) como contexto)"
+                                msg += f" · {ultimo['guias_usadas']} guía(s) previa(s) como contexto"
                             st.success(msg)
+                        # Aviso especial: diseño curricular oficial usado
+                        if ultimo.get("diseno_oficial_usado"):
+                            prog_of = ultimo.get("programa_oficial", "")
+                            st.info(f"🔒 **Saberes y criterios oficiales aplicados** desde el Diseño Curricular"
+                                    + (f" de _{prog_of[:60]}_" if prog_of else "")
+                                    + ". Estos campos aparecen en gris; puedes editarlos si necesitas ajustar algo.")
                         if no_aplicados:
                             st.warning(f"⚠️ La IA no devolvió estos campos (o venían vacíos): "
                                        f"{', '.join(no_aplicados)}")
@@ -1949,17 +2000,33 @@ def seccion_planeacion_pedagogica():
                             st.markdown(f"**Aplicados:** {ultimo.get('aplicados', [])}")
                             st.markdown(f"**No aplicados:** {ultimo.get('no_aplicados', [])}")
 
+            # Detectar si esta fila tiene saberes/criterios del diseño oficial
+            # (los campos vienen con formato "• item1\n• item2..." si son oficiales)
+            _es_oficial = (
+                fila.get("saberes_conceptos", "").strip().startswith("•")
+                or fila.get("saberes_proceso", "").strip().startswith("•")
+                or fila.get("criterios_evaluacion", "").strip().startswith("•")
+            )
+            _sufijo_oficial = " 🔒 (del Diseño Curricular oficial)" if _es_oficial else ""
+
             c3, c4 = st.columns(2)
             with c3:
-                saberes_c = st.text_area("Saberes de Conceptos y Principios",
-                    value=fila.get("saberes_conceptos", ""), height=100,
-                    key=f"pln_saberes_conceptos_{i}")
-                saberes_p = st.text_area("Saberes de Proceso",
-                    value=fila.get("saberes_proceso", ""), height=100,
-                    key=f"pln_saberes_proceso_{i}")
-                criterios = st.text_area("Criterios de Evaluación",
-                    value=fila.get("criterios_evaluacion", ""), height=140,
-                    key=f"pln_criterios_evaluacion_{i}")
+                saberes_c = st.text_area(
+                    f"Saberes de Conceptos y Principios{_sufijo_oficial}",
+                    value=fila.get("saberes_conceptos", ""), height=180 if _es_oficial else 100,
+                    key=f"pln_saberes_conceptos_{i}",
+                    help="🔒 Estos datos vienen del Diseño Curricular oficial SENA. "
+                         "Puedes editarlos si necesitas ajustar algo." if _es_oficial else None)
+                saberes_p = st.text_area(
+                    f"Saberes de Proceso{_sufijo_oficial}",
+                    value=fila.get("saberes_proceso", ""), height=180 if _es_oficial else 100,
+                    key=f"pln_saberes_proceso_{i}",
+                    help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
+                criterios = st.text_area(
+                    f"Criterios de Evaluación{_sufijo_oficial}",
+                    value=fila.get("criterios_evaluacion", ""), height=220 if _es_oficial else 140,
+                    key=f"pln_criterios_evaluacion_{i}",
+                    help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
                 actividades_apr = st.text_area("Actividades de Aprendizaje",
                     value=fila.get("actividades_aprendizaje", ""), height=100,
                     key=f"pln_actividades_aprendizaje_{i}")
@@ -2236,6 +2303,88 @@ def _buscar_guias_de_competencia(competencia_texto: str) -> list:
     return coincidencias
 
 
+# ============ NUEVA SECCIÓN: DISEÑOS CURRICULARES ============
+def seccion_disenos_curriculares():
+    st.header("📚 Diseños Curriculares")
+    st.caption("Sube el PDF del Informe del Programa de Formación Titulada del SENA. "
+               "La app extrae por cada competencia sus conocimientos del saber, conocimientos "
+               "de proceso y criterios de evaluación **oficiales y verbatim**, para que la IA "
+               "los respete y no los invente.")
+
+    st.info("🔒 **PDFs procesados localmente con `pypdf`, sin consumir tokens de IA.** "
+            "Solo se guarda la estructura extraída.")
+
+    st.markdown("---")
+    st.subheader("📤 Cargar un diseño curricular")
+    archivo = st.file_uploader("PDF del Informe del Programa (formato SENA)",
+                               type=["pdf"], key="pdf_diseno")
+    if archivo is not None:
+        try:
+            with st.spinner("Procesando PDF..."):
+                diseno = procesar_pdf_diseno(archivo.getvalue())
+
+            st.success(f"✅ PDF procesado. **{diseno.get('total_competencias', 0)} competencias** detectadas.")
+
+            # Vista previa
+            st.markdown("### Vista previa del programa")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Denominación:** {diseno.get('denominacion', 'N/A')}")
+                st.markdown(f"**Código:** {diseno.get('codigo_programa', 'N/A')}")
+                st.markdown(f"**Versión:** {diseno.get('version_programa', 'N/A')}")
+            with c2:
+                st.markdown(f"**Tipo:** {diseno.get('tipo_programa', 'N/A')}")
+                st.markdown(f"**Total horas:** {diseno.get('total_horas', 'N/A')}")
+                st.markdown(f"**Etapa productiva:** {diseno.get('etapa_productiva_horas', 'N/A')}h")
+
+            with st.expander("🔍 Ver competencias detectadas", expanded=True):
+                for c in diseno.get("competencias", []):
+                    nombre = c.get('nombre', 'Sin nombre')
+                    st.markdown(f"**[{c.get('codigo', '?')}] {nombre}** · "
+                                f"{c.get('duracion_horas', '?')}h · "
+                                f"{len(c.get('raps', []))} RAPs · "
+                                f"{len(c.get('conocimientos_proceso', []))} conoc. proceso · "
+                                f"{len(c.get('conocimientos_saber', []))} conoc. saber · "
+                                f"{len(c.get('criterios_evaluacion', []))} criterios")
+
+            if st.button("💾 Guardar diseño curricular en la app",
+                         type="primary", use_container_width=True):
+                agregar_o_actualizar_diseno(DISENOS_FILE, diseno)
+                st.success("✅ Diseño guardado. Ya lo puede usar la Planeación Pedagógica.")
+                st.rerun()
+        except Exception as e:
+            st.error(f"Error procesando el PDF: {e}")
+            st.exception(e)
+
+    # Diseños guardados
+    st.markdown("---")
+    st.subheader("💾 Diseños curriculares guardados")
+    disenos = cargar_disenos(DISENOS_FILE)
+    if not disenos:
+        st.info("Aún no has cargado ningún diseño curricular. Sube el PDF arriba.")
+        return
+
+    for i, d in enumerate(disenos):
+        with st.expander(
+            f"📘 [{d.get('codigo_programa', '?')}] {d.get('denominacion', 'Sin nombre')}",
+            expanded=False
+        ):
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.markdown(f"**Versión:** {d.get('version_programa', '?')} · "
+                            f"**Tipo:** {d.get('tipo_programa', '?')} · "
+                            f"**Total:** {d.get('total_horas', '?')}h · "
+                            f"**Competencias:** {len(d.get('competencias', []))}")
+                # Listado de competencias
+                for c in d.get("competencias", []):
+                    st.markdown(f"  · `{c.get('codigo', '?')}` — {c.get('nombre', 'N/A')} "
+                                f"({c.get('duracion_horas', '?')}h)")
+            with c2:
+                if st.button("🗑️ Eliminar", key=f"del_dis_{i}"):
+                    eliminar_diseno(DISENOS_FILE, d.get("codigo_programa", ""))
+                    st.rerun()
+
+
 # ============ HELPERS ============
 def _extraer_codigo(competencia_str: str) -> str:
     m = re.search(r"(\d{6,})", competencia_str)
@@ -2269,6 +2418,8 @@ elif seccion == "🗓️ Planeación Pedagógica":
     seccion_planeacion_pedagogica()
 elif seccion == "📄 Proyectos Formativos":
     seccion_proyectos_formativos()
+elif seccion == "📚 Diseños Curriculares":
+    seccion_disenos_curriculares()
 elif seccion == "🤖 Configurar IA":
     seccion_configurar_ia()
 elif seccion == "✉️ Configurar correo":
