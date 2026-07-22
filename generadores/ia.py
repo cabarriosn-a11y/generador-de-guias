@@ -305,8 +305,10 @@ class GeminiCliente:
     def generar_planeacion(self, datos: dict, instrucciones_extra: str = "") -> dict:
         """Genera los campos técnicos de UNA fila de la planeación pedagógica.
         Recibe: programa, fase, proyecto_formativo, actividad_proyecto, competencia, raps.
-        Opcionalmente: guias_relacionadas (list) - guías ya generadas para esta competencia,
-                       para alinear las "actividades_aprendizaje" con lo que ya existe.
+        Opcionalmente:
+          - guias_relacionadas (list): guías ya generadas para esta competencia
+          - saberes_conceptos_oficiales, saberes_proceso_oficiales,
+            criterios_evaluacion_oficiales (list): del diseño curricular SENA
         Devuelve dict con: saberes_conceptos, saberes_proceso, criterios_evaluacion,
                           actividades_aprendizaje, descripcion_evidencia, estrategias_didacticas,
                           ambiente, materiales, horas_directas, horas_independientes.
@@ -320,13 +322,46 @@ class GeminiCliente:
             raps_formateados=self._formatear_raps(datos.get("raps", [])),
         )
 
+        # ★ Si vienen saberes/criterios OFICIALES del diseño curricular, agregarlos como contexto
+        # y decirle a la IA que los respete verbatim (no los reinvente)
+        saberes_c_of = datos.get("saberes_conceptos_oficiales", [])
+        saberes_p_of = datos.get("saberes_proceso_oficiales", [])
+        criterios_of = datos.get("criterios_evaluacion_oficiales", [])
+
+        if saberes_c_of or saberes_p_of or criterios_of:
+            contexto_oficial = "\n\nCONTEXTO OFICIAL — DISEÑO CURRICULAR SENA:\n"
+            contexto_oficial += ("Esta competencia tiene un diseño curricular oficial cargado. "
+                                 "Los siguientes campos YA ESTÁN DEFINIDOS por el SENA y NO deben "
+                                 "ser inventados. Devuélvelos EXACTAMENTE como aparecen aquí:\n\n")
+            if saberes_c_of:
+                contexto_oficial += "SABERES DE CONCEPTOS Y PRINCIPIOS (oficial):\n"
+                for s in saberes_c_of:
+                    contexto_oficial += f"  • {s}\n"
+                contexto_oficial += "\n"
+            if saberes_p_of:
+                contexto_oficial += "SABERES DE PROCESO (oficial):\n"
+                for s in saberes_p_of:
+                    contexto_oficial += f"  • {s}\n"
+                contexto_oficial += "\n"
+            if criterios_of:
+                contexto_oficial += "CRITERIOS DE EVALUACIÓN (oficial):\n"
+                for c in criterios_of:
+                    contexto_oficial += f"  • {c}\n"
+                contexto_oficial += "\n"
+            contexto_oficial += ("Los campos 'saberes_conceptos', 'saberes_proceso' y 'criterios_evaluacion' "
+                                 "DEBEN devolverse tal cual aparecen arriba, unidos con saltos de línea "
+                                 "y con '• ' al inicio de cada uno. Genera con creatividad los demás "
+                                 "campos (actividades_aprendizaje, descripcion_evidencia, estrategias_didacticas, "
+                                 "ambiente, materiales) alineándolos con estos saberes oficiales.")
+            prompt += contexto_oficial
+
         # Alineación con guías de aprendizaje ya generadas (si hay)
         guias_prev = datos.get("guias_relacionadas", [])
         if guias_prev:
             contexto_guias = "\n\nCONTEXTO ADICIONAL — GUÍAS DE APRENDIZAJE YA GENERADAS PARA ESTA COMPETENCIA:\n"
             contexto_guias += ("El instructor ya ha diseñado las siguientes guías de aprendizaje "
                                "para esta competencia. Las 'actividades_aprendizaje' y las "
-                               "'evidencias' que generes DEBEN estar alineadas con estas guías, "
+                               "'descripcion_evidencia' que generes DEBEN estar alineadas con estas guías, "
                                "haciendo referencia a las actividades 3.1 (Reflexión), 3.2 "
                                "(Contextualización), 3.3 (Apropiación) y 3.4 (Transferencia) "
                                "que están en cada guía.\n\n")
