@@ -112,7 +112,7 @@ def parsear_tabla_planeacion(texto: str) -> list:
         r"\s+"
         r"(?P<codigo_comp>\d{9})\s*-\s*"
         r"(?P<nombre_comp>.+?)"
-        r"(?=\d{6}\s*-|\Z|3\.5|3\.6|3\.7|4\.|5\.)",
+        r"(?=\d{6}\s*-|\Z|3\.5\s|3\.6\s|3\.7|4\.\s*Rubros|5\.\s*Equipo)",
         re.DOTALL
     )
 
@@ -155,12 +155,17 @@ def parsear_tabla_planeacion(texto: str) -> list:
 
 
 def _es_nombre_fase_tipico(linea: str) -> bool:
-    """True si la línea coincide con un nombre típico de fase SENA."""
-    # Normalizar: mayúsculas, sin tildes, sin espacios
-    norm = linea.upper().strip().rstrip('.').rstrip(':')
+    """True si la línea coincide con un nombre típico de fase SENA.
+    Maneja prefijos numéricos como '1. ANÁLISIS', '2. PLANEACIÓN', etc.
+    """
+    # Normalizar: mayúsculas, sin tildes, sin espacios ni prefijos numéricos
+    norm = linea.upper().strip().rstrip('.').rstrip(':').strip()
+    # Quitar prefijo tipo "1.", "2)", "3-"
+    norm = re.sub(r"^\d+[\.\)\-]\s*", "", norm).strip()
+    # Quitar tildes (todas las variantes, incluyendo ANALISÍS mal escrito)
     norm_sin_tildes = (norm.replace("Á", "A").replace("É", "E").replace("Í", "I")
                           .replace("Ó", "O").replace("Ú", "U").replace("Ñ", "N"))
-    # Diccionario de nombres típicos de fase en proyectos formativos SENA
+    # Diccionario de nombres típicos SENA
     fases_tipicas = {
         "ANALISIS", "PLANEACION", "PLANEAR",
         "EJECUCION", "EJECUTAR",
@@ -178,13 +183,16 @@ def _es_nombre_fase_tipico(linea: str) -> bool:
 
 # Palabras que SUELEN ser continuación (no fases) — para evitar falsos positivos
 _PALABRAS_NO_FASE = {
-    "ORGANIZACIÓN", "ORGANIZACION",  # aparece en "EN LA ORGANIZACIÓN"
+    "ORGANIZACIÓN", "ORGANIZACION",
     "EMPRESA", "ENTIDAD",
     "SECTOR", "CONTEXTO",
     "NORMATIVA", "POLÍTICA", "POLITICA",
     "TECNOLOGÍA", "TECNOLOGIA",
     "INSTITUCIÓN", "INSTITUCION",
     "COMUNIDAD", "SOCIEDAD",
+    "TÉCNICOS", "TECNICOS", "SOFTWARE",
+    "VIGENTE", "SOCIAL", "PRODUCTIVO",
+    "AMBIENTAL", "LABORAL",
 }
 
 
@@ -192,19 +200,26 @@ def _es_probable_fase(linea: str) -> bool:
     """True si la línea es una fase (por heurística estricta)."""
     linea = linea.strip()
     palabras = linea.split()
-    # Debe ser corta, sin dígitos largos, mayoritariamente en mayúsculas
-    if not (1 <= len(palabras) <= 3 and len(linea) <= 25 and _es_mayus(linea)):
+    # Debe ser corta, mayoritariamente en mayúsculas
+    if not (1 <= len(palabras) <= 4 and len(linea) <= 30 and _es_mayus(linea)):
         return False
+    # No debe tener códigos largos
     if re.search(r"\d{4,}", linea):
         return False
-    # Filtrar palabras que suelen ser continuación de una frase
-    if linea.upper().strip().rstrip('.') in _PALABRAS_NO_FASE:
+    # Filtrar: si termina en punto y NO tiene prefijo numérico → probablemente es final
+    # de una frase, no fase
+    if linea.rstrip().endswith(".") and not re.match(r"^\d+[\.\)\-]\s*[A-ZÁÉÍÓÚÑ]", linea):
         return False
-    # Primero, si coincide con el diccionario típico, es fase
+    # Extraer la palabra clave (sin prefijo numérico ni puntos)
+    palabra_clave = re.sub(r"^\d+[\.\)\-]\s*", "", linea.upper().rstrip('.').rstrip(':')).strip()
+    # Filtrar palabras que son continuación de frases
+    if palabra_clave in _PALABRAS_NO_FASE:
+        return False
+    # Prioridad 1: coincide con diccionario típico → es fase
     if _es_nombre_fase_tipico(linea):
         return True
-    # Si es UNA sola palabra y no está en la lista de exclusión, es candidata
-    if len(palabras) == 1 and len(linea) >= 4:
+    # Prioridad 2 (fallback): una sola palabra ≥4 chars y no está en exclusiones
+    if len(palabras) == 1 and len(palabra_clave) >= 4:
         return True
     return False
 
@@ -391,6 +406,14 @@ def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
     """Convierte las filas planas en una estructura jerárquica:
     Proyecto → Fases → Actividades → Competencias → RAPs
     """
+    # Sanitizar filas: reemplazar fases None/vacías por "SIN FASE"
+    for fila in filas:
+        if not fila.get("fase") or not str(fila.get("fase", "")).strip():
+            fila["fase"] = "SIN FASE"
+        else:
+            # Asegurar que sea string
+            fila["fase"] = str(fila["fase"]).strip()
+
     # Encontrar forma canónica de cada actividad por fase
     canon = _agrupar_actividades_similares(filas)
 
