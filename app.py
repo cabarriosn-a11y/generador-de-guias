@@ -1779,6 +1779,47 @@ def seccion_planeacion_pedagogica():
     if not st.session_state.get("planeacion_filas"):
         st.session_state.planeacion_filas = [_fila_planeacion_vacia()]
 
+    # ★ APLICAR RESULTADOS PENDIENTES DE IA ANTES de crear los widgets
+    # (Streamlit exige que las session_state keys de los widgets se modifiquen
+    # ANTES de que los widgets se instancien en esta ejecución)
+    for i_apl in range(len(st.session_state.planeacion_filas)):
+        pendiente_key = f"pln_pendiente_ia_{i_apl}"
+        if pendiente_key in st.session_state:
+            pendiente = st.session_state[pendiente_key]
+            resultado_p = pendiente.get("resultado", {})
+            if isinstance(resultado_p, dict):
+                fila_p = st.session_state.planeacion_filas[i_apl]
+                # Campos de texto
+                for k in ("saberes_conceptos", "saberes_proceso",
+                          "criterios_evaluacion", "actividades_aprendizaje",
+                          "descripcion_evidencia", "estrategias_didacticas",
+                          "ambiente", "materiales"):
+                    valor = resultado_p.get(k, "")
+                    if valor:
+                        valor_str = str(valor).strip()
+                        fila_p[k] = valor_str
+                        # ★ Actualizar la session_state key del widget ANTES de que se cree
+                        st.session_state[f"pln_{k}_{i_apl}"] = valor_str
+                # Horas (widgets con keys pln_hd_ y pln_hi_)
+                v_hd = resultado_p.get("horas_directas")
+                if v_hd not in (None, ""):
+                    try:
+                        v_int = int(v_hd)
+                        fila_p["horas_directas"] = v_int
+                        st.session_state[f"pln_hd_{i_apl}"] = v_int
+                    except (ValueError, TypeError):
+                        pass
+                v_hi = resultado_p.get("horas_independientes")
+                if v_hi not in (None, ""):
+                    try:
+                        v_int = int(v_hi)
+                        fila_p["horas_independientes"] = v_int
+                        st.session_state[f"pln_hi_{i_apl}"] = v_int
+                    except (ValueError, TypeError):
+                        pass
+            # Ya se aplicó, quitar la marca de pendiente
+            del st.session_state[pendiente_key]
+
     cli_ia = obtener_cliente_ia()
 
     col_a, col_b = st.columns(2)
@@ -1841,58 +1882,33 @@ def seccion_planeacion_pedagogica():
                             }
                             resultado = cli_ia.generar_planeacion(datos_ia)
 
-                            # Guardar la respuesta cruda para debug
-                            st.session_state[f"pln_ultimo_resultado_{i}"] = {
-                                "resultado": resultado,
-                                "guias_usadas": len(guias_relacionadas),
-                                "competencia": competencia[:80],
-                            }
-
-                            # Aplicar los valores al dict de la fila
-                            fila_actual = st.session_state.planeacion_filas[i]
+                            # Contar campos aplicables
                             campos_ia = ("saberes_conceptos", "saberes_proceso",
                                          "criterios_evaluacion", "actividades_aprendizaje",
                                          "descripcion_evidencia", "estrategias_didacticas",
-                                         "ambiente", "materiales")
-                            aplicados = []
-                            no_aplicados = []
+                                         "ambiente", "materiales", "horas_directas",
+                                         "horas_independientes")
+                            aplicados, no_aplicados = [], []
                             if isinstance(resultado, dict):
                                 for k in campos_ia:
-                                    valor = resultado.get(k, "")
-                                    if valor:  # solo aplicar si tiene contenido
-                                        fila_actual[k] = str(valor).strip()
+                                    v = resultado.get(k)
+                                    if v not in (None, "", 0):
                                         aplicados.append(k)
                                     else:
                                         no_aplicados.append(k)
-                                # Horas
-                                for hkey, jkey in [("horas_directas", "horas_directas"),
-                                                    ("horas_independientes", "horas_independientes")]:
-                                    v = resultado.get(jkey)
-                                    if v not in (None, ""):
-                                        try:
-                                            fila_actual[hkey] = int(v)
-                                            aplicados.append(hkey)
-                                        except (ValueError, TypeError):
-                                            no_aplicados.append(hkey)
-                            else:
-                                no_aplicados = list(campos_ia)
 
-                            st.session_state[f"pln_ultimo_resultado_{i}"]["aplicados"] = aplicados
-                            st.session_state[f"pln_ultimo_resultado_{i}"]["no_aplicados"] = no_aplicados
-
-                            # Limpiar session_state keys de widgets para forzar re-render con valores nuevos
-                            keys_widgets = [
-                                f"pln_hd_{i}", f"pln_hi_{i}",
-                                f"pln_saberes_conceptos_{i}", f"pln_saberes_proceso_{i}",
-                                f"pln_criterios_evaluacion_{i}",
-                                f"pln_actividades_aprendizaje_{i}",
-                                f"pln_descripcion_evidencia_{i}",
-                                f"pln_estrategias_didacticas_{i}",
-                                f"pln_ambiente_{i}", f"pln_materiales_{i}",
-                            ]
-                            for kw in keys_widgets:
-                                st.session_state.pop(kw, None)
-
+                            # ★ Guardar como PENDIENTE — se aplicará al inicio del próximo rerun
+                            # ANTES de que los widgets se instancien
+                            st.session_state[f"pln_pendiente_ia_{i}"] = {
+                                "resultado": resultado,
+                                "guias_usadas": len(guias_relacionadas),
+                                "competencia": competencia[:80],
+                                "aplicados": aplicados,
+                                "no_aplicados": no_aplicados,
+                            }
+                            # También guardamos para el debug post-rerun
+                            st.session_state[f"pln_ultimo_resultado_{i}"] = dict(
+                                st.session_state[f"pln_pendiente_ia_{i}"])
                             st.rerun()
                         except Exception as e:
                             import traceback
@@ -1902,7 +1918,7 @@ def seccion_planeacion_pedagogica():
                                 "traceback": traceback.format_exc(),
                             }
 
-                # Mostrar resultado de la última llamada (después del rerun)
+                # Mostrar mensaje del último resultado (post-rerun)
                 if f"pln_ultimo_resultado_{i}" in st.session_state:
                     ultimo = st.session_state[f"pln_ultimo_resultado_{i}"]
                     if "error" in ultimo:
