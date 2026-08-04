@@ -1782,7 +1782,10 @@ def seccion_planeacion_pedagogica():
 
     st.subheader("2. Filas de la tabla (una por competencia)")
     st.caption("Cada fila es una competencia dentro de una fase. Puedes tener varias "
-               "competencias en la misma fase, o repartirlas entre fases distintas.")
+               "competencias en la misma fase, o repartirlas entre fases distintas. "
+               "💡 Escribe un RAP por línea: al generar el Excel, cada competencia se reparte "
+               "automáticamente en una fila por RAP, con Competencia (y Fase/Actividad si coinciden "
+               "entre competencias) en una celda combinada.")
 
     if not st.session_state.get("planeacion_filas"):
         st.session_state.planeacion_filas = [_fila_planeacion_vacia()]
@@ -2061,6 +2064,9 @@ def seccion_planeacion_pedagogica():
 
     st.session_state.planeacion_filas = filas_editadas
     st.markdown("---")
+    st.caption("🚀 El Excel se genera con una fila por cada RAP. Competencia queda en una celda "
+               "combinada según su número de RAPs; Fase y Actividad se combinan también entre "
+               "competencias consecutivas que coincidan.")
 
     if st.button("🚀 Generar Planeación Pedagógica (Excel)",
                   type="primary", use_container_width=True):
