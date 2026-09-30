@@ -166,6 +166,37 @@ REGLAS OBLIGATORIAS:
 5. Devuelve SOLO el JSON, nada más"""
 
 
+# Prompt POR RAP para la planeación pedagógica GFPI-F-134 (una fila Excel = un RAP)
+PROMPT_PLANEACION_RAP_DEFAULT = """Eres experto en diseño curricular y pedagogía del SENA (Colombia). Diligencia la fila de la PLANEACIÓN PEDAGÓGICA (formato GFPI-F-134) correspondiente a UN resultado de aprendizaje.
+
+CONTEXTO:
+- Programa: {programa}
+- Proyecto formativo: {proyecto_formativo}
+- Fase: {fase}
+- Actividad del proyecto: {actividad_proyecto}
+- Competencia: {competencia}
+- RESULTADO DE APRENDIZAJE A PLANEAR: {rap}
+- Otros RAP de la misma competencia (NO los desarrolles aquí): {otros_raps}
+{bloque_oficial}
+Responde ÚNICAMENTE con un objeto JSON válido (sin markdown ni texto adicional):
+{{
+  "saberes_conceptos": ["..."],
+  "saberes_proceso": ["..."],
+  "criterios_evaluacion": ["..."],
+  "actividades_aprendizaje": "Un párrafo que inicia con verbo en infinitivo y describe QUÉ hace el aprendiz, CON QUÉ técnica o herramienta y PARA QUÉ producto (60-90 palabras).",
+  "descripcion_evidencia": "Inicia con 'Evidencia de Conocimiento:', 'Evidencia de Desempeño:' o 'Evidencia de Producto:' (puede combinar) y describe el entregable verificable (40-70 palabras).",
+  "estrategias_didacticas": "1 o 2 estrategias activas con el formato 'Nombre de la estrategia: cómo se aplica en esta actividad.' (ABP, estudio de caso, juego de roles, aula invertida, simulación, proyecto, etc.)",
+  "ambiente": "Ambiente tipificado SENA (p. ej. 'Polivalente', 'Sistemas', 'Laboratorio de ...').",
+  "materiales": "Materiales de formación separados por comas."
+}}
+
+REGLAS:
+1. {regla_saberes}
+2. La actividad y la evidencia deben desarrollar SOLO este RAP y ser coherentes con la actividad del proyecto.
+3. Contextualiza al sector del programa y a La Guajira (Colombia) cuando aplique; no inventes empresas ficticias.
+4. No incluyas horas: el instructor las asigna manualmente."""
+
+
 PROMPTS_DEFAULT = {
     "system": SYSTEM_PROMPT_DEFAULT,
     "presentacion": PROMPT_PRESENTACION_DEFAULT,
@@ -173,6 +204,7 @@ PROMPTS_DEFAULT = {
     "glosario": PROMPT_GLOSARIO_DEFAULT,
     "referentes": PROMPT_REFERENTES_DEFAULT,
     "planeacion": PROMPT_PLANEACION_DEFAULT,
+    "planeacion_rap": PROMPT_PLANEACION_RAP_DEFAULT,
 }
 
 
@@ -378,6 +410,77 @@ class GeminiCliente:
         prompt = self._aplicar_extra(prompt, instrucciones_extra)
         respuesta = self._llamar(prompt)
         return self._parsear_json(respuesta)
+
+    # ---------- Planeación POR RAP (GFPI-F-134 según referencia oficial) ----------
+    def generar_planeacion_rap(self, datos: dict, instrucciones_extra: str = "") -> dict:
+        """Genera los campos de UNA fila de la planeación (un RAP).
+
+        Si llegan saberes/criterios OFICIALES (diseño curricular), la IA solo puede
+        SELECCIONAR de esas listas; luego se filtra lo devuelto y se descarta cualquier ítem
+        que no coincida textualmente con el oficial (nunca se inventan saberes ni criterios).
+        Devuelve dict con listas → ya convertidas a texto con saltos de línea.
+        """
+        of_c = [x for x in datos.get("saberes_conceptos_oficiales", []) if x]
+        of_p = [x for x in datos.get("saberes_proceso_oficiales", []) if x]
+        of_cr = [x for x in datos.get("criterios_evaluacion_oficiales", []) if x]
+        hay_oficial = bool(of_c or of_p or of_cr)
+        if hay_oficial:
+            numerar = lambda xs: "\n".join(f"  [{i}] {x}" for i, x in enumerate(xs, 1)) or "  (sin datos)"
+            bloque = ("\nLISTAS OFICIALES DEL DISEÑO CURRICULAR (SENA). Son de TODA la competencia:\n"
+                      f"SABERES DE CONCEPTOS Y PRINCIPIOS:\n{numerar(of_c)}\n"
+                      f"SABERES DE PROCESO:\n{numerar(of_p)}\n"
+                      f"CRITERIOS DE EVALUACIÓN:\n{numerar(of_cr)}\n")
+            regla = ("En saberes_conceptos, saberes_proceso y criterios_evaluacion devuelve SOLO los "
+                     "ítems de las listas oficiales que correspondan a ESTE RAP, copiados EXACTAMENTE "
+                     "(mismo texto, sin el número). Está PROHIBIDO redactar ítems nuevos.")
+        else:
+            bloque = ""
+            regla = ("Redacta 3-6 saberes de conceptos, 3-5 saberes de proceso y 2-4 criterios de "
+                     "evaluación (tercera persona, medibles) propios de este RAP.")
+        raps = [r for r in datos.get("raps", []) if r]
+        otros = [r for r in raps if r.strip() != datos.get("rap", "").strip()]
+        prompt = self.prompts.get("planeacion_rap", PROMPT_PLANEACION_RAP_DEFAULT).format(
+            programa=datos.get("programa", ""), proyecto_formativo=datos.get("proyecto_formativo", ""),
+            fase=datos.get("fase", ""), actividad_proyecto=datos.get("actividad_proyecto", ""),
+            competencia=datos.get("competencia", ""), rap=datos.get("rap", ""),
+            otros_raps="; ".join(otros) or "(ninguno)", bloque_oficial=bloque, regla_saberes=regla)
+        prompt = self._aplicar_extra(prompt, instrucciones_extra)
+        res = self._parsear_json(self._llamar(prompt))
+        if not isinstance(res, dict):
+            raise RuntimeError("La IA no devolvió un objeto JSON.")
+
+        pares = (("saberes_conceptos", of_c), ("saberes_proceso", of_p), ("criterios_evaluacion", of_cr))
+        for campo, oficial in pares:
+            items = res.get(campo) or []
+            if isinstance(items, str):
+                items = [x for x in re.split(r"\n+|•", items) if x.strip()]
+            items = [re.sub(r"^\s*(\[\d+\]|\d+[.)-])\s*", "", str(x)).strip(" •-\t") for x in items]
+            if oficial:
+                items = self._filtrar_verbatim(items, oficial)
+            res[campo] = "\n\n".join(items)
+        for campo in ("actividades_aprendizaje", "descripcion_evidencia", "estrategias_didacticas",
+                      "ambiente", "materiales"):
+            v = res.get(campo, "")
+            res[campo] = "\n".join(v) if isinstance(v, list) else str(v or "").strip()
+        res["_oficial"] = hay_oficial
+        return res
+
+    @staticmethod
+    def _filtrar_verbatim(items: list, oficiales: list) -> list:
+        """Mapea cada ítem de la IA al texto OFICIAL exacto (tolerando mayúsculas/espacios/
+        puntuación final). Lo que no coincide con ninguno se descarta."""
+        norm = lambda t: re.sub(r"[\s.;:,]+", " ", str(t)).strip().upper()
+        mapa = {norm(o): o for o in oficiales}
+        salida = []
+        for it in items:
+            k = norm(it)
+            elegido = mapa.get(k)
+            if not elegido:  # coincidencia por prefijo (IA que recorta el final)
+                elegido = next((o for kk, o in mapa.items() if len(k) > 25 and
+                                (kk.startswith(k) or k.startswith(kk))), None)
+            if elegido and elegido not in salida:
+                salida.append(elegido)
+        return salida
 
     # ---------- helpers internos ----------
     def _respetar_pausa(self):

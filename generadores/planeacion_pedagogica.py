@@ -1,331 +1,476 @@
-"""Genera la Planeación Pedagógica (formato oficial GFPI-F-134) del SENA.
+"""Planeación Pedagógica — formato oficial GFPI-F-134 (v05) del SENA.
 
-Estrategia: usa la plantilla oficial GFPI-F-134.xlsx como base y solo llena las celdas
-de datos, preservando encabezado institucional, celdas fusionadas y formato oficial.
+POR QUÉ ESTE MOTOR NO USA openpyxl PARA GUARDAR
+-----------------------------------------------
+El formato GFPI-F-134 es auditado (fuentes, tamaños, bordes, anchos, clasificación de la
+información). Al guardar con openpyxl se PIERDEN piezas oficiales de la plantilla:
+  * el logo SENA del encabezado de impresión (&G, dibujo VML),
+  * el cuadro de texto con la "x" que marca la clasificación "Pública",
+  * las casillas de clasificación (imágenes del drawing),
+  * extensiones del libro y configuración de impresora.
 
-FORMATO DE FILAS (v2 — una fila por RAP):
-La plantilla oficial trae la columna "RESULTADOS DE APRENDIZAJE" pensada para UN RAP por
-fila. Cada competencia (3, 4 o 5 RAP típicamente) se reparte aquí en tantas filas de Excel
-como RAP tenga. Las columnas que NO cambian por RAP se fusionan verticalmente en una sola
-celda combinada que abarca esas filas:
+Por eso aquí se trabaja directamente sobre el paquete .xlsx (ZIP): se copia TODO tal cual
+y solo se reescribe el XML de la hoja "FASE" (celdas de datos + celdas combinadas + altura
+de filas). Cada celda nueva reutiliza el índice de estilo (s="…") EXACTO que usa la
+plantilla oficial en esa columna, así que fuente, tamaño, negrita, alineación y bordes son
+los del formato — no se "imitan", son los mismos.
 
-  - COMPETENCIA, Saberes (conceptos/proceso), Criterios de Evaluación, Horas, Actividades
-    de Aprendizaje, Evidencia, Estrategias, Ambiente, Materiales, Instructores y
-    Observaciones -> se fusionan DENTRO del bloque de su propia competencia.
-  - FASE y ACTIVIDAD DE PROYECTO FORMATIVO -> se fusionan igual, pero además ENTRE
-    competencias consecutivas si comparten el mismo texto (una fase o actividad puede
-    agrupar varias competencias, tal como en el formato oficial impreso).
-  - RESULTADOS DE APRENDIZAJE (RAP) -> es la ÚNICA columna que nunca se fusiona: cada RAP
-    vive en su propia fila, que es justamente el objetivo de esta reorganización.
-
-La estructura de datos de entrada NO cambia (se sigue editando 1 bloque = 1 competencia
-en la UI; "raps" sigue siendo un texto con un RAP por línea). Toda la lógica de reparto y
-fusión ocurre aquí, al momento de generar el Excel.
-
-{
-  "fecha_elaboracion": "2026-07-21",
-  "programa": "Técnico en Integración de Operaciones Logísticas",
-  "modalidad": "Presencial",
-  "codigo_programa": "137136 - Versión 1",
-  "proyecto_formativo": "REGISTRAR...",
-  "codigo_proyecto": "PF-2026-001",
-  "equipo_curricular": "Carlos Barrios",
-  "regional_centro": "Regional Guajira - Centro Industrial y de Energías Alternativas",
-
-  "filas": [
-    {
-      "fase": "Planear",
-      "actividad_proyecto": "Identificar los principios...",
-      "competencia": "220201501 - Aplicar conocimientos...",
-      "raps": "1. Aplicación...\n2. Organizar...\n3. Verificar...",   # 1 línea = 1 RAP
-      "saberes_conceptos": "Fuerza, masa, peso, fricción...",
-      "saberes_proceso": "Identificar principios físicos...",
-      "criterios_evaluacion": "Identifica los principios físicos...",
-      "actividades_aprendizaje": "Guía de aprendizaje S1 RA-01: Leyes de Newton...",
-      "horas_directas": 48,
-      "horas_independientes": 48,
-      "descripcion_evidencia": "Guía resuelta, video experimental, propuesta...",
-      "estrategias_didacticas": "ABP, simulación PhET, exposición dialogada...",
-      "ambiente": "Aula de sistemas con conexión a internet",
-      "materiales": "Computadores, video beam, simuladores PhET",
-      "instructores": "Carlos Barrios",
-      "observaciones": "",
-    }
-  ]
+MODELO DE DATOS (compatible hacia atrás)
+----------------------------------------
+datos = {
+  "fecha_elaboracion": "2026-09-30",
+  "programa", "modalidad", "codigo_programa", "proyecto_formativo", "codigo_proyecto",
+  "equipo_curricular"  (uno o varios nombres, uno por línea),
+  "regional_centro",
+  "filas": [                       # 1 elemento = 1 competencia dentro de una fase/actividad
+     {"fase", "actividad_proyecto", "competencia",
+      # ► Modo recomendado (igual a la planeación de referencia): detalle POR RAP
+      "raps_detalle": [
+         {"rap", "saberes_conceptos", "saberes_proceso", "criterios_evaluacion",
+          "actividades_aprendizaje", "horas_directas", "horas_independientes",
+          "descripcion_evidencia", "estrategias_didacticas", "ambiente", "materiales",
+          "instructores", "observaciones"}, ...],
+      # ► Modo heredado: "raps" (1 por línea) + los campos anteriores a nivel competencia.
+      #   En ese caso las columnas E–P se combinan verticalmente dentro de la competencia.
+     }, ...]
 }
-"""
-import shutil
-from pathlib import Path
-from copy import copy
+Si un RAP no trae un campo, hereda el valor de la competencia.
 
-from openpyxl import load_workbook
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-from openpyxl.utils import get_column_letter
-from openpyxl.drawing.image import Image as ImagenXLSX
+REGLAS DE COMBINACIÓN (idénticas a la referencia)
+- D (RAP): nunca se combina — 1 fila Excel por RAP.
+- C (Competencia): se combina en todas las filas de sus RAP.
+- A (Fase) y B (Actividad de proyecto): se combinan entre filas consecutivas con el mismo
+  texto (una actividad puede agrupar varias competencias).
+- E–P: por RAP (modo recomendado) o combinadas por competencia (modo heredado).
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import tempfile
+import zipfile
+from datetime import date, datetime
+from pathlib import Path
+from xml.sax.saxutils import escape
 
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "GFPI-F-134.xlsx"
-LOGO_PATH = Path(__file__).parent.parent / "templates" / "logo_sena.png"
+HOJA_FASE = "xl/worksheets/sheet2.xml"          # hoja "FASE" de la plantilla oficial
 
-# Mapa de columnas en la tabla (fila 18 en adelante) — coincide 1:1 con los encabezados
-# oficiales de la plantilla (fila 16-17 de la hoja "FASE").
-COLS_TABLA = {
-    "fase":                    1,   # A — FASE DE PROYECTO FORMATIVO
-    "actividad_proyecto":      2,   # B — ACTIVIDAD DE PROYECTO FORMATIVO
-    "competencia":             3,   # C — COMPETENCIA
-    "raps":                    4,   # D — RESULTADOS DE APRENDIZAJE (1 por fila, nunca se fusiona)
-    "saberes_conceptos":       5,   # E — SABERES DE CONCEPTOS Y PRINCIPIOS
-    "saberes_proceso":         6,   # F — SABERES DE PROCESO
-    "criterios_evaluacion":    7,   # G — CRITERIOS DE EVALUACIÓN
-    "actividades_aprendizaje": 8,   # H — ACTIVIDADES DE APRENDIZAJE A DESARROLLAR
-    "horas_directas":          9,   # I — HORAS TRABAJO DIRECTO
-    "horas_independientes":    10,  # J — HORAS TRABAJO INDEPENDIENTE
-    "descripcion_evidencia":   11,  # K — DESCRIPCIÓN DE LA EVIDENCIA DE APRENDIZAJE
-    "estrategias_didacticas":  12,  # L — ESTRATEGIAS DIDÁCTICAS ACTIVAS
-    "ambiente":                13,  # M — AMBIENTE
-    "materiales":              14,  # N — MATERIALES DE FORMACIÓN
-    "instructores":            15,  # O — INSTRUCTORES RESPONSABLES
-    "observaciones":           16,  # P — OBSERVACIONES
+FILA_INICIO = 18                                  # primera fila de datos (bajo los títulos 16-17)
+COLUMNAS = "ABCDEFGHIJKLMNOP"
+
+# Campo → columna (encabezados oficiales filas 16-17)
+CAMPOS = {
+    "A": "fase", "B": "actividad_proyecto", "C": "competencia", "D": "rap",
+    "E": "saberes_conceptos", "F": "saberes_proceso", "G": "criterios_evaluacion",
+    "H": "actividades_aprendizaje", "I": "horas_directas", "J": "horas_independientes",
+    "K": "descripcion_evidencia", "L": "estrategias_didacticas", "M": "ambiente",
+    "N": "materiales", "O": "instructores", "P": "observaciones",
 }
-CAMPO_POR_COL = {v: k for k, v in COLS_TABLA.items()}
+CAMPOS_POR_RAP = [CAMPOS[c] for c in "EFGHIJKLMNOP"]
+NUMERICOS = {"horas_directas", "horas_independientes"}
 
-COL_RAPS = COLS_TABLA["raps"]
-# Fase y Actividad se fusionan también ENTRE competencias consecutivas que coincidan.
-COLS_FUSION_CRUZADA = (COLS_TABLA["fase"], COLS_TABLA["actividad_proyecto"])
-CAMPOS_FUSION_CRUZADA = {COLS_TABLA["fase"]: "fase", COLS_TABLA["actividad_proyecto"]: "actividad_proyecto"}
+# Índices de estilo (cellXfs) tomados de la planeación oficial diligenciada (fila 18).
+#   A: Calibri 11 centrado · B: Calibri 11 centrado+ajuste · C/D: Calibri 10 NEGRITA centrado
+#   E–G: Calibri 10 NEGRITA arriba-izq · H,K–O: Calibri 10 arriba · I/J: Calibri 10 arriba
+#   P: Calibri 10 arriba con borde medio derecho (cierre del cuadro).
+ESTILO_DATO = {"A": 135, "B": 136, "C": 129, "D": 133, "E": 127, "F": 127, "G": 127,
+               "H": 134, "I": 4, "J": 4, "K": 134, "L": 134, "M": 134, "N": 134,
+               "O": 134, "P": 148}
+ESTILO_CUBIERTA_A = 141     # celdas cubiertas de la columna A (borde medio izquierdo)
+# Fila en blanco + fila de cierre (borde medio inferior), como en la plantilla oficial.
+ESTILO_BLANCO = {"A": 141, "B": 142, **{c: 143 for c in "CDEFG"},
+                 **{c: 4 for c in "HIJKLMNO"}, "P": 24}
+ESTILO_CIERRE = {"A": 145, "B": 146, **{c: 147 for c in "CDEFG"},
+                 **{c: 25 for c in "HIJKLMNO"}, "P": 26}
 
-FILA_INICIO_TABLA = 18
-COLOR_ALT = "F0F0F0"
-ALTURA_MIN_FILA = 20
-PUNTOS_POR_LINEA = 15
-
-# Anchuras de columna (unidades Excel ~ caracteres). Se reutilizan para estimar cuántas
-# líneas necesitará cada celda al hacer wrap_text, y así calcular la altura de fila.
-ANCHURAS = {
-    1: 12, 2: 25, 3: 22, 4: 30, 5: 22, 6: 22, 7: 26, 8: 26,
-    9: 10, 10: 10, 11: 24, 12: 22, 13: 18, 14: 22, 15: 20, 16: 18,
-}
-
-
-def _obtener_estilo_referencia(ws, fila_ref=18):
-    """Copia el estilo de la fila de referencia (18) para reutilizarlo en filas nuevas."""
-    estilos = {}
-    for col_idx in range(1, 17):
-        cell = ws.cell(row=fila_ref, column=col_idx)
-        estilos[col_idx] = {
-            "font": copy(cell.font),
-            "alignment": copy(cell.alignment),
-            "border": copy(cell.border),
-            "fill": copy(cell.fill),
-        }
-    return estilos
+# Anchos oficiales (unidades Excel) — SOLO para estimar alturas; la plantilla no se toca.
+ANCHO = {"A": 18, "B": 18, "C": 18.45, "D": 35.45, "E": 35.45, "F": 35.45, "G": 35.45,
+         "H": 25.36, "I": 25.36, "J": 26, "K": 26, "L": 22.45, "M": 11.45, "N": 16,
+         "O": 19.45, "P": 21.18}
+PT_LINEA = {"A": 14.5, "B": 14.5}                 # Calibri 11
+PT_LINEA_DEF = 13.2                               # Calibri 10
+ALTO_MIN, ALTO_MAX = 30.0, 409.0                  # 409 = máximo que admite Excel
 
 
-def _aplicar_estilo(cell, estilo, fila_par=False, centrar_vertical=False):
-    """Aplica el estilo copiado a la celda: alternado gris por bloque de competencia y
-    alineación vertical centrada cuando la celda pertenece a un rango fusionado."""
-    cell.font = estilo["font"]
-    cell.alignment = Alignment(
-        horizontal=estilo["alignment"].horizontal or "left",
-        vertical="center" if centrar_vertical else "top",
-        wrap_text=True,
-    )
-    cell.border = estilo["border"]
-    if fila_par:
-        cell.fill = PatternFill(start_color=COLOR_ALT, end_color=COLOR_ALT, fill_type="solid")
-    else:
-        cell.fill = PatternFill(fill_type=None)
+# ─────────────────────────────── utilidades de texto ───────────────────────────────
+def _txt(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        return "\n".join(str(x).strip() for x in v if str(x).strip())
+    return str(v).strip()
 
 
-def _lineas_necesarias(texto, ancho_chars) -> int:
-    """Estima cuántas líneas visuales ocupará `texto` con wrap_text en una columna de
-    `ancho_chars` caracteres (con margen de seguridad del 15% para no quedarnos cortos)."""
-    texto = "" if texto is None else str(texto)
+def _lineas(texto: str, col: str) -> int:
+    """Líneas visuales estimadas de `texto` con ajuste de texto en la columna `col`."""
     if not texto:
         return 1
-    ancho_efectivo = max(1, int(ancho_chars * 0.85))
+    ancho = ANCHO[col]
     total = 0
     for linea in texto.split("\n"):
-        if not linea:
+        if not linea.strip():
             total += 1
-        else:
-            total += max(1, -(-len(linea) // ancho_efectivo))  # ceil division
+            continue
+        letras = [ch for ch in linea if ch.isalpha()]
+        mayus = sum(ch.isupper() for ch in letras) / max(1, len(letras))
+        # Mayúsculas y negrita ocupan más: factor de caracteres por unidad de ancho
+        factor = 0.92 if mayus > 0.6 else 1.12
+        if col in "CDEFG":
+            factor *= 0.95                       # negrita
+        cpl = max(4, int(ancho * factor))
+        total += -(-len(linea) // cpl)
     return total
 
 
-def _rangos_consecutivos_por_valor(rangos_bloque, filas_originales, campo):
-    """Para columnas de fusión cruzada (Fase, Actividad): agrupa bloques de competencia
-    CONSECUTIVOS que comparten el mismo valor (normalizado) de `campo`.
+def _celda(ref: str, estilo: int, valor=None) -> str:
+    if valor is None or valor == "":
+        return f'<c r="{ref}" s="{estilo}"/>'
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        return f'<c r="{ref}" s="{estilo}"><v>{valor}</v></c>'
+    t = escape(str(valor)).replace("\r", "")
+    return f'<c r="{ref}" s="{estilo}" t="inlineStr"><is><t xml:space="preserve">{t}</t></is></c>'
 
-    Devuelve {num_fila: (fila_ini_grupo, fila_fin_grupo)} cubriendo TODAS las filas de la
-    tabla, listo para consultar directamente por número de fila."""
-    bloques_ordenados = sorted(rangos_bloque.items(), key=lambda kv: kv[1][0])
-    mapa = {}
-    grupo_valor, grupo_ini, grupo_fin, grupo_rangos = None, None, None, []
 
-    def _cerrar_grupo():
-        for gi, gf in grupo_rangos:
-            for fn in range(gi, gf + 1):
-                mapa[fn] = (grupo_ini, grupo_fin)
+def _num(v):
+    try:
+        return int(float(str(v).strip()))
+    except (ValueError, TypeError):
+        return _txt(v)
 
-    for b, (f_ini, f_fin) in bloques_ordenados:
-        valor = str(filas_originales[b].get(campo, "")).strip().lower()
-        if grupo_valor is not None and valor != "" and valor == grupo_valor:
-            grupo_fin = f_fin
-            grupo_rangos.append((f_ini, f_fin))
+
+def _serial_excel(fecha) -> int | str:
+    """Fecha → número de serie Excel (la celda E9 oficial tiene formato de fecha)."""
+    if isinstance(fecha, (date, datetime)):
+        d = fecha if isinstance(fecha, date) else fecha.date()
+    else:
+        s = _txt(fecha)
+        d = None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                d = datetime.strptime(s, fmt).date()
+                break
+            except ValueError:
+                pass
+        if d is None:
+            return s
+    return (d - date(1899, 12, 30)).days
+
+
+# ─────────────────────────────── expansión por RAP ───────────────────────────────
+def expandir_filas(filas: list[dict]) -> list[dict]:
+    """1 competencia → N registros (uno por RAP). Cada registro lleva: bloque, modo, y
+    todos los campos A–P ya resueltos (herencia competencia → RAP)."""
+    salida = []
+    for b, comp in enumerate(filas or []):
+        detalle = comp.get("raps_detalle") or []
+        if detalle:
+            modo = "por_rap"
+            raps = [d if isinstance(d, dict) else {"rap": d} for d in detalle]
         else:
-            if grupo_valor is not None:
-                _cerrar_grupo()
-            grupo_valor, grupo_ini, grupo_fin, grupo_rangos = valor, f_ini, f_fin, [(f_ini, f_fin)]
-    if grupo_valor is not None:
-        _cerrar_grupo()
-    return mapa
+            modo = "heredado"
+            lista = [r.strip() for r in _txt(comp.get("raps")).splitlines() if r.strip()]
+            raps = [{"rap": r} for r in (lista or [""])]
+        for rap in raps:
+            reg = {"_bloque": b, "_modo": modo,
+                   "fase": _txt(comp.get("fase")),
+                   "actividad_proyecto": _txt(comp.get("actividad_proyecto")),
+                   "competencia": _txt(comp.get("competencia")),
+                   "rap": _txt(rap.get("rap") or rap.get("texto") or rap.get("nombre"))}
+            for campo in CAMPOS_POR_RAP:
+                v = rap.get(campo)
+                if v in (None, "") and modo == "por_rap":
+                    v = comp.get(campo)
+                elif modo == "heredado":
+                    v = comp.get(campo)
+                reg[campo] = _num(v) if campo in NUMERICOS and v not in (None, "") else _txt(v)
+            salida.append(reg)
+    return salida
 
 
-def generar_planeacion(datos: dict, ruta_salida: str) -> str:
-    """Genera el archivo de planeación pedagógica llenando la plantilla oficial.
+def _rangos(registros: list[dict]) -> dict[str, list[tuple[int, int]]]:
+    """Rangos (índice inicio, índice fin) a combinar por columna."""
+    n = len(registros)
+    rangos: dict[str, list[tuple[int, int]]] = {c: [] for c in COLUMNAS}
 
-    Reparte cada competencia (cada elemento de datos['filas']) en una fila de Excel POR
-    CADA Resultado de Aprendizaje, fusionando verticalmente Competencia y las demás
-    columnas que no varían por RAP. Fase y Actividad se fusionan también entre
-    competencias consecutivas que comparten el mismo texto.
-    """
-    shutil.copy(TEMPLATE_PATH, ruta_salida)
-    wb = load_workbook(ruta_salida)
-    ws = wb["FASE"]
+    def agrupar(clave):
+        grupos, ini = [], 0
+        for i in range(1, n + 1):
+            if i == n or clave(i) != clave(ini) or clave(i) is None:
+                grupos.append((ini, i - 1))
+                ini = i
+        return grupos
 
-    # ===== FIX: openpyxl no soporta el dibujo VML legado que la plantilla usa para el
-    # logo del encabezado de impresión (&G). Al guardar, ese vínculo queda roto y deja
-    # texto basura tipo "_x000a_..." visible en la parte superior al imprimir/exportar
-    # a PDF (bug preexistente, no depende de las filas/RAPs). Se limpia el texto roto y
-    # se reinserta el logo SENA como imagen normal anclada en la misma zona del título,
-    # así vuelve a verse tanto en pantalla como al imprimir. =====
-    if ws.oddHeader and ws.oddHeader.center:
-        ws.oddHeader.center.text = None
-    if LOGO_PATH.exists():
-        logo = ImagenXLSX(str(LOGO_PATH))
-        logo.width, logo.height = 78, 74
-        logo.anchor = "G1"
-        ws.add_image(logo)
+    # A y B: texto igual consecutivo (vacíos nunca se agrupan entre sí)
+    for col, campo in (("A", "fase"), ("B", "actividad_proyecto")):
+        def k(i, campo=campo):
+            v = registros[i][campo].strip().upper()
+            return v if v else ("__vacio__", i)
+        rangos[col] = agrupar(k)
+    # C: por competencia (bloque)
+    rangos["C"] = agrupar(lambda i: registros[i]["_bloque"])
+    rangos["D"] = [(i, i) for i in range(n)]
+    for col in "EFGHIJKLMNOP":
+        rangos[col] = agrupar(lambda i: (registros[i]["_bloque"], "h")
+                              if registros[i]["_modo"] == "heredado" else ("r", i))
+    return rangos
 
-    # ===== CABECERA (columna E porque las celdas están fusionadas E-P) =====
-    ws["E9"] = datos.get("fecha_elaboracion", "")
-    ws["E10"] = datos.get("programa", "")
-    ws["E11"] = datos.get("modalidad", "Presencial")
-    ws["E12"] = datos.get("codigo_programa", "")
-    ws["E13"] = datos.get("proyecto_formativo", "")
-    ws["E14"] = datos.get("codigo_proyecto", "")
-    ws["E15"] = datos.get("equipo_curricular", "")
-    ws["K15"] = datos.get("regional_centro", "")
 
-    for coord in ["E9", "E10", "E11", "E12", "E13", "E14", "E15", "K15"]:
-        celda = ws[coord]
-        celda.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        celda.font = Font(name="Calibri", size=10, color="2C2C2C")
+# ─────────────────────────────── núcleo XML ───────────────────────────────
+ADVERTENCIAS: list[str] = []       # se llena en cada generación; la UI la muestra
 
-    # ===== 1) EXPANDIR: 1 competencia -> N filas (una por RAP) =====
-    filas_originales = datos.get("filas", [])
-    filas_expandidas = []  # cada item: (bloque_idx, fila_dict_original, texto_de_ESE_rap)
-    for bloque_idx, fila in enumerate(filas_originales):
-        raps_lista = [r.strip() for r in str(fila.get("raps", "")).splitlines() if r.strip()]
-        if not raps_lista:
-            raps_lista = [""]  # nunca perder la competencia aunque no tenga RAPs cargados
-        for rap_texto in raps_lista:
-            filas_expandidas.append((bloque_idx, fila, rap_texto))
 
-    if not filas_expandidas:
-        wb.save(ruta_salida)
-        return ruta_salida
+def _ajustar_textos_largos(registros: list[dict], rangos: dict) -> list[str]:
+    """Excel no permite filas de más de 409 pt: el texto que no cabe se CORTA al imprimir.
+    1º compacta líneas en blanco dobles (el contenido queda íntegro); 2º si aún no cabe,
+    registra una advertencia legible para el instructor."""
+    avisos = []
+    for c in "DEFGHIJKLMNOP":
+        pt = PT_LINEA.get(c, PT_LINEA_DEF)
+        campo = CAMPOS[c]
+        for a, b in rangos[c]:
+            cap = ALTO_MAX * (b - a + 1)
+            texto = _txt(registros[a][campo])
+            if _lineas(texto, c) * pt + 8 <= cap:
+                continue
+            compacto = re.sub(r"[ \t]+\n", "\n", texto)
+            compacto = re.sub(r"\n\s*\n+", "\n", compacto)
+            registros[a][campo] = compacto
+            if _lineas(compacto, c) * pt + 8 > cap:
+                nombre = {"D": "Resultado de aprendizaje", "E": "Saberes de conceptos",
+                          "F": "Saberes de proceso", "G": "Criterios de evaluación",
+                          "H": "Actividades de aprendizaje", "K": "Evidencia",
+                          "L": "Estrategias didácticas"}.get(c, campo)
+                rap = _txt(registros[a]["rap"])[:60]
+                avisos.append(f"«{nombre}» del RAP «{rap}…» supera el alto máximo de una fila "
+                              f"de Excel (409 pt): parte del texto no se verá al imprimir. "
+                              f"Resúmalo o divídalo.")
+    ADVERTENCIAS.extend(avisos)
+    return avisos
 
-    estilos_ref = _obtener_estilo_referencia(ws, fila_ref=18)
 
-    # ===== 2) Rango de filas Excel que ocupa cada bloque (competencia) =====
-    rangos_bloque = {}
-    for i, (bloque_idx, _, _) in enumerate(filas_expandidas):
-        num_fila = FILA_INICIO_TABLA + i
-        if bloque_idx not in rangos_bloque:
-            rangos_bloque[bloque_idx] = [num_fila, num_fila]
-        else:
-            rangos_bloque[bloque_idx][1] = num_fila
-    rangos_bloque = {b: tuple(v) for b, v in rangos_bloque.items()}
+def validar_planeacion(datos: dict) -> list[str]:
+    """Revisión previa (sin generar archivo): campos obligatorios + textos que no caben."""
+    avisos = []
+    obligatorios = {"programa": "Denominación del programa", "codigo_programa": "Código y versión",
+                    "proyecto_formativo": "Nombre del proyecto", "codigo_proyecto": "Código del proyecto",
+                    "equipo_curricular": "Equipo de gestión curricular",
+                    "regional_centro": "Regional y centro"}
+    for k, nom in obligatorios.items():
+        if not _txt(datos.get(k)):
+            avisos.append(f"Falta «{nom}» en el encabezado.")
+    regs = expandir_filas(datos.get("filas", []))
+    for r in regs:
+        for campo, nom in (("rap", "RAP"), ("actividades_aprendizaje", "actividad de aprendizaje"),
+                           ("descripcion_evidencia", "evidencia"),
+                           ("criterios_evaluacion", "criterios de evaluación")):
+            if not _txt(r[campo]):
+                avisos.append(f"{r['competencia'][:40]}… → falta {nom}"
+                              + (f" en RAP «{r['rap'][:40]}…»" if campo != "rap" else "") + ".")
+    if regs:
+        copia = [dict(r) for r in regs]
+        avisos += _ajustar_textos_largos(copia, _rangos(copia))
+        ADVERTENCIAS.clear()
+    return avisos
 
-    mapa_fusion_cruzada = {
-        COLS_TABLA["fase"]: _rangos_consecutivos_por_valor(rangos_bloque, filas_originales, "fase"),
-        COLS_TABLA["actividad_proyecto"]: _rangos_consecutivos_por_valor(
-            rangos_bloque, filas_originales, "actividad_proyecto"),
+def _construir_hoja(xml: str, datos: dict, registros: list[dict]) -> str:
+    # 1) Encabezado (valores del bloque de identificación, filas 9-15)
+    cab = {
+        "E9": _serial_excel(datos.get("fecha_elaboracion") or date.today()),
+        "E10": _txt(datos.get("programa")),
+        "E11": _txt(datos.get("modalidad") or "PRESENCIAL"),
+        "E12": _txt(datos.get("codigo_programa")),
+        "E13": _txt(datos.get("proyecto_formativo")),
+        "E14": _txt(datos.get("codigo_proyecto")),
+        "E15": "Nombres y Apellidos\n" + _txt(datos.get("equipo_curricular")),
+        "K15": "Regional y Centro de formación\n" + _txt(datos.get("regional_centro")),
     }
 
-    def _rango_de(col, num_fila, bloque_idx):
-        if col == COL_RAPS:
-            return (num_fila, num_fila)
-        if col in mapa_fusion_cruzada:
-            return mapa_fusion_cruzada[col].get(num_fila, (num_fila, num_fila))
-        return rangos_bloque[bloque_idx]
+    def reemplazar_celda(m):
+        ref, attrs = m.group(1), m.group(2)
+        if ref not in cab:
+            return m.group(0)
+        s = re.search(r's="(\d+)"', attrs)
+        return _celda(ref, int(s.group(1)) if s else 0, cab[ref])
 
-    # ===== 3) FUSIONAR primero (las celdas cubiertas quedan como MergedCell: hay que
-    #          fusionar ANTES de escribir, y luego escribir solo en la esquina superior) =====
-    rangos_ya_fusionados = set()
-    for i, (bloque_idx, _, _) in enumerate(filas_expandidas):
-        num_fila = FILA_INICIO_TABLA + i
-        for col in COLS_TABLA.values():
-            if col == COL_RAPS:
+    patron_celda = r'<c r="([A-Z]+\d+)"([^>]*?)(?:/>|>.*?</c>)'
+    cabecera, resto = xml.split("<sheetData>", 1)
+    datos_hoja, cola = resto.split("</sheetData>", 1)
+    filas_xml = re.findall(r"<row [^>]*?(?:/>|>.*?</row>)", datos_hoja, re.S)
+
+    conservadas = []
+    for fx in filas_xml:
+        r = int(re.search(r' r="(\d+)"', fx).group(1))
+        if r >= FILA_INICIO:
+            continue                              # la tabla se reconstruye completa
+        if 9 <= r <= 15:
+            fx = re.sub(patron_celda, reemplazar_celda, fx, flags=re.S)
+        conservadas.append(fx)
+
+    # 2) Tabla de datos
+    n = len(registros)
+    rangos = _rangos(registros) if n else {c: [] for c in COLUMNAS}
+    inicio_de = {c: {a: b for a, b in rangos[c]} for c in COLUMNAS}   # ini → fin
+    cubierta = {c: {i for a, b in rangos[c] for i in range(a + 1, b + 1)} for c in COLUMNAS}
+    _ajustar_textos_largos(registros, rangos)
+
+    # Altura: cada fila debe alojar su parte de todos los textos que la cubren
+    alto = [ALTO_MIN] * n
+    for c in COLUMNAS:
+        pt = PT_LINEA.get(c, PT_LINEA_DEF)
+        campo = CAMPOS[c]
+        for a, b in rangos[c]:
+            span = b - a + 1
+            req = (_lineas(_txt(registros[a][campo]), c) * pt + 8) / span
+            for i in range(a, b + 1):
+                alto[i] = max(alto[i], req)
+    # Si una celda combinada necesita más de lo que suman sus filas, repartir el faltante
+    for c in COLUMNAS:
+        pt = PT_LINEA.get(c, PT_LINEA_DEF)
+        for a, b in rangos[c]:
+            req = _lineas(_txt(registros[a][CAMPOS[c]]), c) * pt + 8
+            falta = req - sum(alto[a:b + 1])
+            if falta > 0:
+                for i in range(a, b + 1):
+                    alto[i] += falta / (b - a + 1)
+    alto = [min(ALTO_MAX, round(h, 2)) for h in alto]
+
+    nuevas, merges = [], []
+    for i, reg in enumerate(registros):
+        fila = FILA_INICIO + i
+        celdas = []
+        for c in COLUMNAS:
+            ref = f"{c}{fila}"
+            if i in cubierta[c]:
+                est = ESTILO_CUBIERTA_A if c == "A" else ESTILO_DATO[c]
+                celdas.append(_celda(ref, est))
                 continue
-            f_ini, f_fin = _rango_de(col, num_fila, bloque_idx)
-            clave = (col, f_ini, f_fin)
-            if f_fin > f_ini and clave not in rangos_ya_fusionados:
-                ws.merge_cells(start_row=f_ini, start_column=col, end_row=f_fin, end_column=col)
-                rangos_ya_fusionados.add(clave)
+            valor = reg[CAMPOS[c]]
+            celdas.append(_celda(ref, ESTILO_DATO[c], valor))
+            fin = inicio_de[c].get(i, i)
+            if fin > i:
+                merges.append(f"{c}{fila}:{c}{FILA_INICIO + fin}")
+        nuevas.append(f'<row r="{fila}" spans="1:16" ht="{alto[i]}" customHeight="1" '
+                      f'x14ac:dyDescent="0.35">{"".join(celdas)}</row>')
 
-    # ===== 4) ESCRIBIR valores (solo esquina superior-izquierda de cada rango) + estilos
-    #          (estilos sí se aplican a TODAS las celdas del rango, cubiertas o no) =====
-    for i, (bloque_idx, fila_datos, rap_texto) in enumerate(filas_expandidas):
-        num_fila = FILA_INICIO_TABLA + i
-        bloque_par = (bloque_idx % 2 == 1)
+    # Fila en blanco (espacio de diligenciamiento) + fila de cierre del cuadro
+    f_blanco = FILA_INICIO + n
+    f_cierre = f_blanco + 1
+    nuevas.append(f'<row r="{f_blanco}" spans="1:16" ht="20.15" customHeight="1" x14ac:dyDescent="0.35">'
+                  + "".join(_celda(f"{c}{f_blanco}", ESTILO_BLANCO[c]) for c in COLUMNAS) + "</row>")
+    nuevas.append(f'<row r="{f_cierre}" spans="1:16" x14ac:dyDescent="0.35">'
+                  + "".join(_celda(f"{c}{f_cierre}", ESTILO_CIERRE[c]) for c in COLUMNAS) + "</row>")
 
-        for campo, col_idx in COLS_TABLA.items():
-            f_ini, f_fin = _rango_de(col_idx, num_fila, bloque_idx)
-            cell = ws.cell(row=num_fila, column=col_idx)
+    hoja_datos = "<sheetData>" + "".join(conservadas + nuevas) + "</sheetData>"
 
-            if num_fila == f_ini:
-                valor = rap_texto if campo == "raps" else fila_datos.get(campo, "")
-                if campo in ("horas_directas", "horas_independientes"):
-                    try:
-                        cell.value = int(valor) if valor not in ("", None) else 0
-                    except (ValueError, TypeError):
-                        cell.value = valor
-                else:
-                    cell.value = str(valor) if valor is not None else ""
+    # 3) Celdas combinadas: se conservan las del encabezado (< fila 18) y se agregan las nuevas
+    m = re.search(r"<mergeCells[^>]*>(.*?)</mergeCells>", cola, re.S)
+    previas = re.findall(r'<mergeCell ref="([^"]+)"/>', m.group(1)) if m else []
+    previas = [r for r in previas if int(re.search(r"(\d+)", r).group(1)) < FILA_INICIO]
+    todas = previas + merges
+    bloque_merge = f'<mergeCells count="{len(todas)}">' + "".join(
+        f'<mergeCell ref="{r}"/>' for r in todas) + "</mergeCells>"
+    cola = cola[:m.start()] + bloque_merge + cola[m.end():] if m else bloque_merge + cola
 
-            _aplicar_estilo(cell, estilos_ref[col_idx], fila_par=bloque_par,
-                             centrar_vertical=(f_fin > f_ini))
+    # 4) Dimensión y vista (abrir arriba-izquierda, no donde quedó el último que editó)
+    cabecera = re.sub(r'<dimension ref="[^"]+"/>', f'<dimension ref="A1:Y{f_cierre}"/>', cabecera)
+    cabecera = re.sub(r'topLeftCell="[A-Z]+\d+"', 'topLeftCell="A1"', cabecera)
+    cabecera = re.sub(r'<selection [^>]*/>', '<selection activeCell="A18" sqref="A18"/>', cabecera)
+    return cabecera + hoja_datos + cola
 
-    # ===== 5) ALTURAS: cada fila debe tener espacio suficiente para el contenido que le
-    #          corresponde (si una celda está fusionada, su contenido se reparte entre
-    #          todas las filas del rango) =====
-    alturas_lineas = {}
-    for col_idx, ancho in ANCHURAS.items():
-        campo = CAMPO_POR_COL[col_idx]
-        rangos_procesados = set()
-        for i, (bloque_idx, fila_datos, rap_texto) in enumerate(filas_expandidas):
-            num_fila = FILA_INICIO_TABLA + i
-            f_ini, f_fin = _rango_de(col_idx, num_fila, bloque_idx)
-            if (f_ini, f_fin) in rangos_procesados:
-                continue
-            rangos_procesados.add((f_ini, f_fin))
-            span = f_fin - f_ini + 1
-            valor = rap_texto if campo == "raps" else fila_datos.get(campo, "")
-            lineas_totales = _lineas_necesarias(valor, ancho)
-            lineas_por_fila = -(-lineas_totales // span)  # ceil
-            for fn in range(f_ini, f_fin + 1):
-                alturas_lineas[fn] = max(alturas_lineas.get(fn, 0), lineas_por_fila)
 
-    for i in range(len(filas_expandidas)):
-        num_fila = FILA_INICIO_TABLA + i
-        lineas = alturas_lineas.get(num_fila, 1)
-        ws.row_dimensions[num_fila].height = max(ALTURA_MIN_FILA, lineas * PUNTOS_POR_LINEA)
+def _compactar_shared_strings(archivos: dict[str, bytes]) -> None:
+    """Elimina de sharedStrings.xml los textos que ya no usa ninguna hoja (evita que un
+    archivo generado arrastre, oculto, el contenido de otra planeación) y renumera."""
+    sst = archivos.get("xl/sharedStrings.xml")
+    if not sst:
+        return
+    sst_txt = sst.decode("utf-8")
+    items = re.findall(r"<si>.*?</si>|<si/>", sst_txt, re.S)
+    hojas = [k for k in archivos if re.match(r"xl/worksheets/sheet\d+\.xml$", k)]
+    usados = set()
+    pat = re.compile(r'(<c [^>]*t="s"[^>]*><v>)(\d+)(</v>)')
+    for h in hojas:
+        usados |= {int(x.group(2)) for x in pat.finditer(archivos[h].decode("utf-8"))}
+    orden = sorted(usados)
+    nuevo = {viejo: i for i, viejo in enumerate(orden)}
+    for h in hojas:
+        t = archivos[h].decode("utf-8")
+        t = pat.sub(lambda x: f"{x.group(1)}{nuevo[int(x.group(2))]}{x.group(3)}", t)
+        archivos[h] = t.encode("utf-8")
+    cab = sst_txt[:sst_txt.find("<si")] if "<si" in sst_txt else sst_txt.split("</sst>")[0]
+    cab = re.sub(r'count="\d+"', f'count="{len(orden)}"', cab)
+    cab = re.sub(r'uniqueCount="\d+"', f'uniqueCount="{len(orden)}"', cab)
+    archivos["xl/sharedStrings.xml"] = (cab + "".join(items[i] for i in orden) + "</sst>").encode("utf-8")
 
-    # ===== 6) Anchuras de columna =====
-    for col, ancho in ANCHURAS.items():
-        ws.column_dimensions[get_column_letter(col)].width = ancho
 
-    wb.save(ruta_salida)
+def _quitar_calc_chain(archivos: dict[str, bytes]) -> None:
+    """calcChain apunta a la fórmula =TODAY() de E9 que ahora es una fecha fija; Excel lo
+    reconstruye solo. Dejarlo provocaría el aviso de 'reparar archivo'."""
+    archivos.pop("xl/calcChain.xml", None)
+    ct = archivos["[Content_Types].xml"].decode("utf-8")
+    archivos["[Content_Types].xml"] = re.sub(r'<Override[^>]*calcChain[^>]*/>', "", ct).encode("utf-8")
+    rels = archivos["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    archivos["xl/_rels/workbook.xml.rels"] = re.sub(
+        r'<Relationship[^>]*calcChain[^>]*/>', "", rels).encode("utf-8")
+
+
+def _estilo_fase_con_borde(archivos: dict[str, bytes]) -> None:
+    """La celda superior de Fase (xf 135) no trae el borde medio izquierdo que sí tienen las
+    demás filas del cuadro (xf 141). Se agrega al final de cellXfs un gemelo de 135 con el
+    borde de 141 — mismo tipo de letra/alineación, solo completa el marco del formato."""
+    global ESTILO_DATO
+    st = archivos["xl/styles.xml"].decode("utf-8")
+    m = re.search(r'<cellXfs count="(\d+)">(.*?)</cellXfs>', st, re.S)
+    if not m:
+        return
+    xfs = re.findall(r"<xf [^>]*?(?:/>|>.*?</xf>)", m.group(2), re.S)
+    if len(xfs) <= 141:
+        return
+    borde = re.search(r'borderId="(\d+)"', xfs[141]).group(1)
+    gemelo = re.sub(r'borderId="\d+"', f'borderId="{borde}"', xfs[135])
+    nuevo_idx = len(xfs)
+    bloque = f'<cellXfs count="{nuevo_idx + 1}">{m.group(2)}{gemelo}</cellXfs>'
+    archivos["xl/styles.xml"] = (st[:m.start()] + bloque + st[m.end():]).encode("utf-8")
+    ESTILO_DATO = {**ESTILO_DATO, "A": nuevo_idx}
+
+
+def generar_planeacion(datos: dict, ruta_salida: str, plantilla: str | Path | None = None) -> str:
+    """Genera el GFPI-F-134 diligenciado en `ruta_salida` a partir de la plantilla oficial."""
+    global ESTILO_DATO
+    plantilla = Path(plantilla or TEMPLATE_PATH)
+    with zipfile.ZipFile(plantilla) as z:
+        infos = z.infolist()
+        archivos = {i.filename: z.read(i.filename) for i in infos}
+    ESTILO_DATO = {**ESTILO_DATO, "A": 135}
+    ADVERTENCIAS.clear()
+    _estilo_fase_con_borde(archivos)
+
+    registros = expandir_filas(datos.get("filas", []))
+    xml = archivos[HOJA_FASE].decode("utf-8")
+    archivos[HOJA_FASE] = _construir_hoja(xml, datos, registros).encode("utf-8")
+    _compactar_shared_strings(archivos)
+    _quitar_calc_chain(archivos)
+
+    tmp = Path(tempfile.mkstemp(suffix=".xlsx")[1])
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+        for info in infos:                        # mismo orden de partes que el original
+            if info.filename in archivos:
+                out.writestr(info.filename, archivos[info.filename])
+    shutil.move(str(tmp), ruta_salida)
     return ruta_salida
+
+
+def resumen_horas(datos: dict) -> dict:
+    """Totales para validar contra la duración oficial de cada competencia."""
+    tot = {}
+    for reg in expandir_filas(datos.get("filas", [])):
+        k = reg["competencia"][:60]
+        d = reg["horas_directas"] if isinstance(reg["horas_directas"], int) else 0
+        ind = reg["horas_independientes"] if isinstance(reg["horas_independientes"], int) else 0
+        if reg["_modo"] == "heredado" and k in tot:
+            continue
+        t = tot.setdefault(k, {"directas": 0, "independientes": 0})
+        t["directas"] += d
+        t["independientes"] += ind
+    return tot

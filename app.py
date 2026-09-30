@@ -32,7 +32,10 @@ from generadores.excel_portafolio import generar_excel_portafolio
 from generadores.email_sender import (
     enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
 )
-from generadores.planeacion_pedagogica import generar_planeacion
+from generadores.planeacion_pedagogica import (
+    generar_planeacion, validar_planeacion, resumen_horas,
+    ADVERTENCIAS as ADVERTENCIAS_PLANEACION,
+)
 from generadores.proyectos_formativos import (
     procesar_pdf as procesar_pdf_proyecto,
     cargar_proyectos, agregar_o_actualizar_proyecto, eliminar_proyecto,
@@ -825,7 +828,7 @@ def _generar_los_tres_documentos(programa, codigo_prog, proyecto, fase, activida
         "actividad_proyecto": actividad_proyecto, "competencia": competencia,
         "raps": [r for r in raps_input if r], "duracion": duracion,
         "presentacion": presentacion, "actividades": actividades,
-        "evidencias_tabla": _armar_tabla_evidencias(actividades, fase),
+        "evidencias_tabla": _armar_tabla_evidencias(actividades, fase, actividad_proyecto),
         "glosario": glosario, "referentes": referentes,
         "autor_nombre": autor, "autor_cargo": "Instructor",
         "autor_dependencia": "Centro de Formación SENA", "autor_fecha": fecha_str,
@@ -1729,6 +1732,8 @@ def seccion_planeacion_pedagogica():
                                     "materiales": "",
                                     "instructores": "",
                                     "observaciones": "",
+                                    "modo_rap": True,
+                                    "raps_detalle": [],
                                 })
                         # Limpiar TODAS las session_state keys de widgets de filas viejas
                         # para que los widgets se recreen con los valores de las nuevas filas
@@ -1739,6 +1744,7 @@ def seccion_planeacion_pedagogica():
                             "pln_criterios_evaluacion_", "pln_actividades_aprendizaje_",
                             "pln_descripcion_evidencia_", "pln_estrategias_didacticas_",
                             "pln_ambiente_", "pln_materiales_", "pln_ins_", "pln_obs_",
+                            "pln_r_", "pln_modo_rap_", "pln_pend_", "pln_rep_", "pln_ia_todos_",
                         )
                         keys_a_limpiar = [
                             k for k in list(st.session_state.keys())
@@ -1831,6 +1837,7 @@ def seccion_planeacion_pedagogica():
             # Ya se aplicó, quitar la marca de pendiente
             del st.session_state[pendiente_key]
 
+    _aplicar_pendientes_raps()
     cli_ia = obtener_cliente_ia()
 
     col_a, col_b = st.columns(2)
@@ -1869,7 +1876,13 @@ def seccion_planeacion_pedagogica():
                 horas_ind = st.number_input("Horas trabajo independiente", 0, 200,
                     value=int(fila.get("horas_independientes", 48)), key=f"pln_hi_{i}")
 
-            if cli_ia:
+            modo_rap = st.toggle(
+                "📑 Detallar por RAP (formato de la planeación oficial de referencia)",
+                value=bool(fila.get("modo_rap", True)), key=f"pln_modo_rap_{i}",
+                help="Cada RAP lleva sus propios saberes, criterios, actividad, horas, evidencia y "
+                     "estrategias (una fila del Excel por RAP). Desactívalo para usar una sola "
+                     "descripción por competencia (celdas combinadas).")
+            if cli_ia and not modo_rap:
                 col_btn_ia, col_dbg = st.columns([2, 1])
                 with col_btn_ia:
                     btn_ia = st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
@@ -2003,57 +2016,80 @@ def seccion_planeacion_pedagogica():
                             st.markdown(f"**Aplicados:** {ultimo.get('aplicados', [])}")
                             st.markdown(f"**No aplicados:** {ultimo.get('no_aplicados', [])}")
 
-            # Detectar si esta fila tiene saberes/criterios del diseño oficial
-            # (los campos vienen con formato "• item1\n• item2..." si son oficiales)
-            _es_oficial = (
-                fila.get("saberes_conceptos", "").strip().startswith("•")
-                or fila.get("saberes_proceso", "").strip().startswith("•")
-                or fila.get("criterios_evaluacion", "").strip().startswith("•")
-            )
-            _sufijo_oficial = " 🔒 (del Diseño Curricular oficial)" if _es_oficial else ""
+            if not modo_rap:
+                # Detectar si esta fila tiene saberes/criterios del diseño oficial
+                # (los campos vienen con formato "• item1\n• item2..." si son oficiales)
+                _es_oficial = (
+                    fila.get("saberes_conceptos", "").strip().startswith("•")
+                    or fila.get("saberes_proceso", "").strip().startswith("•")
+                    or fila.get("criterios_evaluacion", "").strip().startswith("•")
+                )
+                _sufijo_oficial = " 🔒 (del Diseño Curricular oficial)" if _es_oficial else ""
 
-            c3, c4 = st.columns(2)
-            with c3:
-                saberes_c = st.text_area(
-                    f"Saberes de Conceptos y Principios{_sufijo_oficial}",
-                    value=fila.get("saberes_conceptos", ""), height=180 if _es_oficial else 100,
-                    key=f"pln_saberes_conceptos_{i}",
-                    help="🔒 Estos datos vienen del Diseño Curricular oficial SENA. "
-                         "Puedes editarlos si necesitas ajustar algo." if _es_oficial else None)
-                saberes_p = st.text_area(
-                    f"Saberes de Proceso{_sufijo_oficial}",
-                    value=fila.get("saberes_proceso", ""), height=180 if _es_oficial else 100,
-                    key=f"pln_saberes_proceso_{i}",
-                    help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
-                criterios = st.text_area(
-                    f"Criterios de Evaluación{_sufijo_oficial}",
-                    value=fila.get("criterios_evaluacion", ""), height=220 if _es_oficial else 140,
-                    key=f"pln_criterios_evaluacion_{i}",
-                    help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
-                actividades_apr = st.text_area("Actividades de Aprendizaje",
-                    value=fila.get("actividades_aprendizaje", ""), height=100,
-                    key=f"pln_actividades_aprendizaje_{i}")
-            with c4:
-                evidencia = st.text_area("Descripción de la Evidencia",
-                    value=fila.get("descripcion_evidencia", ""), height=100,
-                    key=f"pln_descripcion_evidencia_{i}")
-                estrategias = st.text_area("Estrategias Didácticas Activas",
-                    value=fila.get("estrategias_didacticas", ""), height=100,
-                    key=f"pln_estrategias_didacticas_{i}")
-                ambiente = st.text_input("Ambiente",
-                    value=fila.get("ambiente", ""), key=f"pln_ambiente_{i}")
-                materiales = st.text_area("Materiales de Formación",
-                    value=fila.get("materiales", ""), height=80, key=f"pln_materiales_{i}")
-                instructores = st.text_input("Instructores Responsables",
-                    value=fila.get("instructores",
-                                   cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
-                    key=f"pln_ins_{i}")
-                observaciones = st.text_input("Observaciones",
-                    value=fila.get("observaciones", ""), key=f"pln_obs_{i}")
+                c3, c4 = st.columns(2)
+                with c3:
+                    saberes_c = st.text_area(
+                        f"Saberes de Conceptos y Principios{_sufijo_oficial}",
+                        value=fila.get("saberes_conceptos", ""), height=180 if _es_oficial else 100,
+                        key=f"pln_saberes_conceptos_{i}",
+                        help="🔒 Estos datos vienen del Diseño Curricular oficial SENA. "
+                             "Puedes editarlos si necesitas ajustar algo." if _es_oficial else None)
+                    saberes_p = st.text_area(
+                        f"Saberes de Proceso{_sufijo_oficial}",
+                        value=fila.get("saberes_proceso", ""), height=180 if _es_oficial else 100,
+                        key=f"pln_saberes_proceso_{i}",
+                        help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
+                    criterios = st.text_area(
+                        f"Criterios de Evaluación{_sufijo_oficial}",
+                        value=fila.get("criterios_evaluacion", ""), height=220 if _es_oficial else 140,
+                        key=f"pln_criterios_evaluacion_{i}",
+                        help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
+                    actividades_apr = st.text_area("Actividades de Aprendizaje",
+                        value=fila.get("actividades_aprendizaje", ""), height=100,
+                        key=f"pln_actividades_aprendizaje_{i}")
+                with c4:
+                    evidencia = st.text_area("Descripción de la Evidencia",
+                        value=fila.get("descripcion_evidencia", ""), height=100,
+                        key=f"pln_descripcion_evidencia_{i}")
+                    estrategias = st.text_area("Estrategias Didácticas Activas",
+                        value=fila.get("estrategias_didacticas", ""), height=100,
+                        key=f"pln_estrategias_didacticas_{i}")
+                    ambiente = st.text_input("Ambiente",
+                        value=fila.get("ambiente", ""), key=f"pln_ambiente_{i}")
+                    materiales = st.text_area("Materiales de Formación",
+                        value=fila.get("materiales", ""), height=80, key=f"pln_materiales_{i}")
+                    instructores = st.text_input("Instructores Responsables",
+                        value=fila.get("instructores",
+                                       cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
+                        key=f"pln_ins_{i}")
+                    observaciones = st.text_input("Observaciones",
+                        value=fila.get("observaciones", ""), key=f"pln_obs_{i}")
+
+                raps_detalle = []
+            else:
+                saberes_c = saberes_p = criterios = actividades_apr = evidencia = estrategias = ""
+                raps_detalle = _editor_raps_planeacion(
+                    i, fila, raps_texto, horas_dir, horas_ind, cli_ia,
+                    contexto={"programa": programa, "fase": fase, "proyecto_formativo": proyecto,
+                              "actividad_proyecto": actividad_proy, "competencia": competencia})
+                st.markdown("**Valores comunes a todos los RAP** (un RAP los hereda si los deja vacíos)")
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    ambiente = st.text_input("Ambiente de formación", value=fila.get("ambiente", ""),
+                                             key=f"pln_ambiente_{i}")
+                    materiales = st.text_area("Materiales de formación", value=fila.get("materiales", ""),
+                                              height=70, key=f"pln_materiales_{i}")
+                with cc2:
+                    instructores = st.text_input("Instructores responsables",
+                        value=fila.get("instructores", cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
+                        key=f"pln_ins_{i}")
+                    observaciones = st.text_input("Observaciones", value=fila.get("observaciones", ""),
+                                                  key=f"pln_obs_{i}")
 
             filas_editadas.append({
                 "fase": fase, "actividad_proyecto": actividad_proy,
-                "competencia": competencia, "raps": raps_texto,
+                "competencia": competencia, "raps": raps_texto, "modo_rap": modo_rap,
+                "raps_detalle": raps_detalle,
                 "saberes_conceptos": saberes_c, "saberes_proceso": saberes_p,
                 "criterios_evaluacion": criterios, "actividades_aprendizaje": actividades_apr,
                 "horas_directas": horas_dir, "horas_independientes": horas_ind,
@@ -2068,6 +2104,20 @@ def seccion_planeacion_pedagogica():
                "combinada según su número de RAPs; Fase y Actividad se combinan también entre "
                "competencias consecutivas que coincidan.")
 
+    with st.expander("🔎 Revisión previa (campos faltantes y textos que no caben)", expanded=False):
+        _prev = validar_planeacion({
+            "programa": programa, "codigo_programa": codigo_programa, "proyecto_formativo": proyecto,
+            "codigo_proyecto": codigo_proy, "equipo_curricular": equipo, "regional_centro": regional,
+            "filas": filas_editadas})
+        if _prev:
+            for a in _prev:
+                st.write("• " + a)
+        else:
+            st.success("Todo completo. Lista para generar.")
+        for comp_k, t in resumen_horas({"filas": filas_editadas}).items():
+            st.caption(f"⏱️ {comp_k}… → directas {t['directas']} h · independientes "
+                       f"{t['independientes']} h · total {t['directas'] + t['independientes']} h")
+
     if st.button("🚀 Generar Planeación Pedagógica (Excel)",
                   type="primary", use_container_width=True):
         datos = {
@@ -2081,10 +2131,14 @@ def seccion_planeacion_pedagogica():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe = re.sub(r"[^\w]", "_", programa)[:30]
             ruta = str(PLANEACIONES_DIR / f"Planeacion_{safe}_{ts}.xlsx")
-            with st.spinner("Generando planeación..."):
+            with st.spinner("Generando planeación en el formato oficial GFPI-F-134..."):
                 generar_planeacion(datos, ruta)
             st.session_state.ultimo_archivo_planeacion = ruta
-            st.success("✅ Planeación generada.")
+            st.session_state.ultimo_datos_planeacion = datos
+            st.success("✅ Planeación generada sobre la plantilla oficial (logo, clasificación, "
+                       "fuentes y bordes intactos).")
+            for adv in ADVERTENCIAS_PLANEACION:
+                st.warning("⚠️ " + adv)
         except Exception as e:
             st.error(f"Error: {e}")
             st.exception(e)
@@ -2099,6 +2153,163 @@ def seccion_planeacion_pedagogica():
                     use_container_width=True)
 
 
+# ============ PLANEACIÓN: EDITOR POR RAP (formato de referencia GFPI-F-134) ============
+CAMPOS_RAP_UI = [
+    ("saberes_conceptos", "Saberes de conceptos y principios", 120),
+    ("saberes_proceso", "Saberes de proceso", 120),
+    ("criterios_evaluacion", "Criterios de evaluación", 110),
+    ("actividades_aprendizaje", "Actividades de aprendizaje a desarrollar", 110),
+    ("descripcion_evidencia", "Descripción de la evidencia de aprendizaje", 90),
+    ("estrategias_didacticas", "Estrategias didácticas activas", 90),
+]
+
+
+def _init_estado(key, valor):
+    """Siembra el valor inicial del widget en session_state una sola vez (sin pasar value=,
+    así Streamlit no avisa conflicto cuando la IA o el reparto de horas lo actualizan)."""
+    if key not in st.session_state:
+        st.session_state[key] = valor
+    return key
+
+
+def _repartir_mayor_residuo(total, n):
+    """Reparte `total` horas entre `n` RAP en enteros que suman EXACTO (mayor residuo)."""
+    total, n = int(total or 0), max(1, n)
+    base, resto = divmod(total, n)
+    return [base + (1 if k < resto else 0) for k in range(n)]
+
+
+def _oficial_de_competencia(competencia: str) -> dict:
+    m = re.search(r"(\d{6,9})", competencia or "")
+    oficial = buscar_competencia_por_codigo(m.group(1), DISENOS_FILE) if m else {}
+    if not oficial:
+        return {}
+    c = oficial["competencia"]
+    return {"saberes_conceptos_oficiales": c.get("conocimientos_saber", []),
+            "saberes_proceso_oficiales": c.get("conocimientos_proceso", []),
+            "criterios_evaluacion_oficiales": c.get("criterios_evaluacion", []),
+            "_programa_oficial": oficial.get("programa", "")}
+
+
+def _aplicar_pendientes_raps():
+    """Streamlit exige escribir las keys de los widgets ANTES de crearlos: los resultados de
+    IA y el reparto de horas se guardan como 'pendientes' y se aplican aquí, pre-render."""
+    for k in [k for k in list(st.session_state.keys()) if k.startswith("pln_pend_rap_")]:
+        p = st.session_state.pop(k)
+        for campo, _, _ in CAMPOS_RAP_UI + [("ambiente", "", 0), ("materiales", "", 0)]:
+            v = p["resultado"].get(campo)
+            if v:
+                st.session_state[f"pln_r_{p['i']}_{p['j']}_{campo}"] = str(v).strip()
+    for k in [k for k in list(st.session_state.keys()) if k.startswith("pln_pend_horas_")]:
+        i = k.rsplit("_", 1)[1]
+        for j, (hd, hi) in enumerate(st.session_state.pop(k)):
+            st.session_state[f"pln_r_{i}_{j}_hd"] = int(hd)
+            st.session_state[f"pln_r_{i}_{j}_hi"] = int(hi)
+
+
+def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict) -> dict:
+    datos = {**contexto, "rap": rap, "raps": raps,
+             **{k: v for k, v in oficial.items() if not k.startswith("_")}}
+    return cli_ia.generar_planeacion_rap(datos)
+
+
+def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, contexto):
+    raps = [r.strip() for r in (raps_texto or "").splitlines() if r.strip()]
+    if not raps:
+        st.info("✍️ Escribe los Resultados de Aprendizaje (uno por línea) para detallarlos.")
+        return []
+    previos = fila.get("raps_detalle") or []
+    por_texto = {str(d.get("rap", "")).strip(): d for d in previos}
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button(f"⚖️ Repartir {horas_dir} h directas / {horas_ind} h independientes entre "
+                     f"{len(raps)} RAP", key=f"pln_rep_{i}", use_container_width=True,
+                     help="Reparto en enteros por mayor residuo: la suma cuadra exacto. "
+                          "Luego puedes ajustar cada RAP a mano."):
+            st.session_state[f"pln_pend_horas_{i}"] = list(zip(
+                _repartir_mayor_residuo(horas_dir, len(raps)),
+                _repartir_mayor_residuo(horas_ind, len(raps))))
+            st.rerun()
+    with b2:
+        ia_todos = bool(cli_ia) and st.button("🤖 Generar TODOS los RAP con IA", key=f"pln_ia_todos_{i}",
+                                               use_container_width=True, type="primary")
+    if not cli_ia:
+        st.caption("💡 Configura la IA para autocompletar; sin IA puedes diligenciar a mano.")
+
+    def _lanzar(indices):
+        oficial = _oficial_de_competencia(contexto.get("competencia", ""))
+        errores, ok = [], 0
+        barra = st.progress(0.0, text="La IA está planeando los RAP…")
+        for n, j in enumerate(indices, 1):
+            try:
+                res = _ia_un_rap(cli_ia, contexto, raps[j], raps, oficial)
+                st.session_state[f"pln_pend_rap_{i}_{j}"] = {"i": i, "j": j, "resultado": res}
+                ok += 1
+            except Exception as e:  # un RAP que falla no tumba a los demás
+                errores.append(f"RAP {j + 1}: {e}")
+            barra.progress(n / len(indices), text=f"RAP {n}/{len(indices)} listo")
+        st.session_state[f"pln_r_msg_{i}"] = {
+            "ok": ok, "errores": errores, "oficial": bool(oficial),
+            "programa_oficial": oficial.get("_programa_oficial", "")}
+        st.rerun()
+
+    if ia_todos:
+        _lanzar(list(range(len(raps))))
+
+    msg = st.session_state.get(f"pln_r_msg_{i}")
+    if msg:
+        if msg["ok"]:
+            st.success(f"✅ IA diligenció {msg['ok']} RAP."
+                       + (" 🔒 Saberes y criterios tomados VERBATIM del diseño curricular"
+                          + (f" de {msg['programa_oficial'][:50]}" if msg["programa_oficial"] else "")
+                          if msg["oficial"] else
+                          " ⚠️ No se encontró el diseño curricular de esta competencia: saberes y "
+                          "criterios fueron redactados por la IA — cárgalo en «Diseños Curriculares» "
+                          "para usar los oficiales."))
+        for e in msg["errores"]:
+            st.error(e)
+
+    detalle = []
+    total_hd = total_hi = 0
+    for j, rap in enumerate(raps):
+        prev = por_texto.get(rap) or (previos[j] if j < len(previos) else {})
+        vacio = not any(str(prev.get(c, "")).strip() for c, _, _ in CAMPOS_RAP_UI)
+        with st.expander(f"{'⚪' if vacio else '🟢'} RAP {j + 1}: {rap[:95]}", expanded=False):
+            if cli_ia and st.button("🤖 Generar este RAP con IA", key=f"pln_r_ia_{i}_{j}"):
+                _lanzar([j])
+            r1, r2 = st.columns(2)
+            valores = {}
+            for n, (campo, etiqueta, alto) in enumerate(CAMPOS_RAP_UI):
+                with (r1 if n % 2 == 0 else r2):
+                    k = _init_estado(f"pln_r_{i}_{j}_{campo}", str(prev.get(campo, "")))
+                    valores[campo] = st.text_area(etiqueta, height=alto, key=k)
+            h1, h2, h3, h4 = st.columns(4)
+            with h1:
+                hd = st.number_input("Horas directas", 0, 1000,
+                                     key=_init_estado(f"pln_r_{i}_{j}_hd", int(prev.get("horas_directas") or 0)))
+            with h2:
+                hi = st.number_input("Horas independientes", 0, 1000,
+                                     key=_init_estado(f"pln_r_{i}_{j}_hi", int(prev.get("horas_independientes") or 0)))
+            with h3:
+                amb = st.text_input("Ambiente (si difiere)",
+                                    key=_init_estado(f"pln_r_{i}_{j}_ambiente", str(prev.get("ambiente", ""))))
+            with h4:
+                mat = st.text_input("Materiales (si difieren)",
+                                    key=_init_estado(f"pln_r_{i}_{j}_materiales", str(prev.get("materiales", ""))))
+        total_hd += hd
+        total_hi += hi
+        detalle.append({"rap": rap, **valores, "horas_directas": hd, "horas_independientes": hi,
+                        "ambiente": amb, "materiales": mat})
+
+    cuadra = (total_hd, total_hi) == (int(horas_dir), int(horas_ind))
+    (st.caption if cuadra else st.warning)(
+        f"⏱️ Suma RAP: {total_hd} h directas + {total_hi} h independientes = {total_hd + total_hi} h "
+        + ("✅ cuadra con el total de la competencia." if cuadra else
+           f"— el total indicado es {horas_dir} + {horas_ind} = {int(horas_dir) + int(horas_ind)} h."))
+    return detalle
+
+
 def _fila_planeacion_vacia():
     return {
         "fase": "", "actividad_proyecto": "", "competencia": "", "raps": "",
@@ -2106,6 +2317,7 @@ def _fila_planeacion_vacia():
         "actividades_aprendizaje": "", "horas_directas": 48, "horas_independientes": 48,
         "descripcion_evidencia": "", "estrategias_didacticas": "",
         "ambiente": "", "materiales": "", "instructores": "", "observaciones": "",
+        "modo_rap": True, "raps_detalle": [],
     }
 
 
@@ -2397,20 +2609,27 @@ def _extraer_codigo(competencia_str: str) -> str:
     return m.group(1) if m else competencia_str[:20]
 
 
-def _armar_tabla_evidencias(actividades, fase):
-    rows = [["Fase del proyecto", "Actividad del proyecto formativo", "Actividad de Aprendizaje",
-             "Evidencias de Aprendizaje", "Criterios de Evaluación", "Técnicas e Instrumentos"]]
-    for key, titulo in [("3.3", "3.3 Apropiación"), ("3.4", "3.4 Transferencia")]:
+def _armar_tabla_evidencias(actividades, fase, actividad_proyecto=""):
+    """Filas de la tabla 4 del GFPI-F-135 (columnas oficiales en orden):
+    Fase · Actividad del proyecto formativo · Actividad de aprendizaje · Evidencias ·
+    Criterios de evaluación · Técnicas e instrumentos."""
+    rows = [["Fase del proyecto formativo", "Actividad del proyecto formativo",
+             "Actividad de Aprendizaje", "Evidencias de Aprendizaje", "Criterios de Evaluación",
+             "Técnicas e Instrumentos de Evaluación"]]
+    for key, titulo in [("3.3", "3.3 Actividades de apropiación"),
+                        ("3.4", "3.4 Actividades de transferencia del conocimiento")]:
         act = actividades.get(key, {})
-        if not act.get("descripcion"):
+        if not act.get("descripcion") and not act.get("evidencias"):
             continue
         rows.append([
             fase,
-            (act.get("descripcion", "")[:80] + "...") if len(act.get("descripcion", "")) > 80 else act.get("descripcion", ""),
+            actividad_proyecto,
             titulo,
             act.get("evidencias", ""),
-            "Verificar cumplimiento de la evidencia con la rúbrica correspondiente.",
-            act.get("instrumentos", "Rúbrica de evaluación · Lista de chequeo"),
+            act.get("criterios", "") or "Verifica el cumplimiento de la evidencia según el "
+                                        "instrumento de evaluación de la guía.",
+            act.get("instrumentos", "") or "Técnica: observación / valoración de producto. "
+                                           "Instrumento: lista de chequeo y rúbrica.",
         ])
     return rows
 
