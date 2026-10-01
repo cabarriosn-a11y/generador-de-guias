@@ -148,9 +148,79 @@ MARCAS = [("4.1 ", "norma"), ("4.2 ", "codigo"), ("4.3 ", "nombre"), ("4.4 ", "d
           ("4.5 ", "raps"), ("4.6.1", "proceso"), ("4.6.2", "saber"), ("4.6 ", None),
           ("4.7 ", "criterios"), ("4.8 ", "fin")]
 
+MARCAS_2012 = [("1. CONTENIDOS CURRICULARES", "inicio"), ("2. RESULTADOS DE APRENDIZAJE", "raps"),
+               ("3.1. CONOCIMIENTOS DE CONCEPTOS", "saber"), ("3.1 CONOCIMIENTOS DE CONCEPTOS", "saber"),
+               ("3.2. CONOCIMIENTOS DE PROCESO", "proceso"), ("3.2 CONOCIMIENTOS DE PROCESO", "proceso"),
+               ("3. CONOCIMIENTOS", None), ("4. CRITERIOS DE EVALUACI", "criterios"),
+               ("5. PERFIL", "fin")]
+
+
+def _bloques_2012(L, txt):
+    """Formato ANTIGUO (JasperReports, ~2012): "1. CONTENIDOS CURRICULARES / 2. RESULTADOS /
+    3.1 CONCEPTOS / 3.2 PROCESO / 4. CRITERIOS". El código de cada competencia sale cortado
+    en el PDF (8 dígitos, la celda es angosta), así que se completa con la lista
+    "COMPETENCIAS A DESARROLLAR" del inicio del documento, en el mismo orden."""
+    m = re.search(r"COMPETENCIAS A DESARROLLAR(.*?)1\. CONTENIDOS CURRICULARES", txt, re.S)
+    lista = re.findall(r"^\s*(\d{9})\b", m.group(1), re.M) if m else []
+    info = {
+        "denominacion": (re.search(r"DENOMINACIÓN DEL PROGRAMA\s*\n\s*\d{5,7}\s+(.+)", txt) or [None, ""])[1].strip(),
+        "codigo": (re.search(r"CÓDIGO:.*?\n\s*(\d{5,7})\b", txt, re.S) or [None, ""])[1],
+        "version": (re.search(r"VERSIÓN:\s*(\d+)", txt) or [None, ""])[1],
+        "formato": "2012",
+    }
+    bloques, actual = [], None
+    for l in L:
+        if l["t"].startswith("1. CONTENIDOS CURRICULARES"):
+            actual = []; bloques.append(actual)
+        if actual is not None:
+            actual.append(l)
+    comps = []
+    for i, b in enumerate(bloques):
+        secc, cur = collections.defaultdict(list), "inicio"
+        for l in b:
+            t = l["t"]
+            mm = next((k for pre, k in MARCAS_2012 if t.startswith(pre)), "__no__")
+            if mm != "__no__":
+                cur = mm
+                continue
+            if cur == "fin":
+                break
+            if cur:
+                secc[cur].append(l)
+        cab = secc.get("inicio", [])
+        cod_trunco = (re.search(r"^(\d{6,9})", next((x["t"] for x in cab if re.match(r"^\d{6,9}\b", x["t"])), "")) or [None, ""])[1]
+        codigo = cod_trunco
+        if i < len(lista) and lista[i].startswith(cod_trunco):
+            codigo = lista[i]
+        else:
+            cands = [c for c in lista if c.startswith(cod_trunco)]
+            codigo = cands[0] if len(cands) == 1 else cod_trunco
+        # nombre: renglones de la columna DENOMINACIÓN (x0 > 170) antes de "DURACIÓN"
+        nombre = []
+        for x in cab:
+            if x["t"].startswith("DURACIÓN"):
+                break
+            mc = re.match(r"^\d{6,9}\s+\d+\s+(.+)$", x["t"])     # código + versión + nombre en un renglón
+            if mc:
+                nombre.append(mc.group(1))
+            elif x["x0"] > 170 and x["t"] not in ("DENOMINACIÓN",) and not x["t"].startswith("CÓDIGO"):
+                nombre.append(x["t"])
+        dur = re.search(r"(\d+)\s*horas", " ".join(x["t"] for x in cab))
+        nombre = re.sub(r"\s+", " ", " ".join(nombre)).strip()
+        comps.append({"codigo": codigo, "nombre": nombre, "norma": nombre,
+                      "duracion_horas": int(dur.group(1)) if dur else None,
+                      "_secc": {k: [x for x in v if x["t"] not in ("DENOMINACIÓN",)]
+                                for k, v in secc.items() if k != "inicio"}})
+    return info, comps
+
+
 def parsear_diseno(ruta):
     L = renglones(ruta)
     txt = "\n".join(l["t"] for l in L)
+    if not any(l["t"].startswith("4.1 NORMA") for l in L) and \
+            any(l["t"].startswith("1. CONTENIDOS CURRICULARES") for l in L):
+        info, comps = _bloques_2012(L, txt)
+        return _finalizar(info, comps)
     info = {
         "denominacion": (re.search(r"1\.1 Denominación\s*(?:del Programa:)?\s*\n?(.*)", txt) or [None, ""])[1].strip(),
         "codigo": (re.search(r"1\.2\.?\s*Código\s+(\d+)", txt) or [None, ""])[1],
@@ -193,6 +263,11 @@ def parsear_diseno(ruta):
         comps.append({"codigo": cod.group(1) if cod else "", "nombre": nombre or norma, "norma": norma,
                       "duracion_horas": int(dur.group(1)) if dur else None,
                       "_secc": {k: [x for x in v if x["t"] not in ("DENOMINACIÓN",)] for k, v in secc.items()}})
+    info["formato"] = "2020"
+    return _finalizar(info, comps)
+
+
+def _finalizar(info, comps):
     # Vocabulario de verbos de inicio aprendido del propio documento (renglones que
     # inequívocamente empiezan ítem: el renglón anterior terminó lejos del borde)
     vocab = collections.Counter()
