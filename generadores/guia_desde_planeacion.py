@@ -152,6 +152,7 @@ def bloques_de_planeacion(plan: dict) -> list:
             for a in (d.get("actividades") or [d]):
                 aas.append({
                     "rap_idx": j, "rap": d.get("rap", ""),
+                    "fase": fila.get("fase", ""), "actividad_proyecto": fila.get("actividad_proyecto", ""),
                     "actividad": str(a.get("actividades_aprendizaje", "") or "").strip(),
                     "evidencia": str(a.get("descripcion_evidencia", "") or "").strip(),
                     "estrategias": str(a.get("estrategias_didacticas", "") or "").strip(),
@@ -171,6 +172,23 @@ def bloques_de_planeacion(plan: dict) -> list:
             "materiales": fila.get("materiales") or "Marcadores borrables, papel bond, papelógrafos",
         })
     return bloques
+
+
+def bloque_competencia_completa(bloques: list) -> dict:
+    """Une todos los bloques (fases) de la competencia en UNA guía con todos sus RAP.
+    Cada actividad de aprendizaje conserva su fase y actividad de proyecto (tabla 4)."""
+    fases = list(dict.fromkeys(b["fase"] for b in bloques if b["fase"]))
+    acts = list(dict.fromkeys(b["actividad_proyecto"] for b in bloques if b["actividad_proyecto"]))
+    unir = lambda campo: list(dict.fromkeys(x for b in bloques for x in b[campo]))
+    return {
+        "indice": "todas", "fase": " / ".join(fases), "actividad_proyecto": "\n".join(acts),
+        "competencia": bloques[0]["competencia"] if bloques else "",
+        "raps": unir("raps"), "aas": [a for b in bloques for a in b["aas"]],
+        "horas": sum(b["horas"] for b in bloques), "criterios": unir("criterios"),
+        "saberes_conceptos": unir("saberes_conceptos"), "saberes_proceso": unir("saberes_proceso"),
+        "ambiente": bloques[0]["ambiente"] if bloques else "Polivalente",
+        "materiales": bloques[0]["materiales"] if bloques else "",
+    }
 
 
 def etiqueta_bloque(bl: dict) -> str:
@@ -261,8 +279,8 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
     tabla = [["Fase del proyecto formativo", "Actividad del proyecto formativo", "Actividad de Aprendizaje",
               "Evidencias de Aprendizaje", "Criterios de Evaluación", "Técnicas e Instrumentos de Evaluación"]]
     for a in bl["aas"]:
-        tabla.append([bl["fase"], bl["actividad_proyecto"], a["actividad"], a["evidencia"],
-                      a["criterios"], instrumento_para(a["evidencia"])])
+        tabla.append([a.get("fase") or bl["fase"], a.get("actividad_proyecto") or bl["actividad_proyecto"],
+                      a["actividad"], a["evidencia"], a["criterios"], instrumento_para(a["evidencia"])])
 
     refs = list(referentes or [])
     usadas = any(m.get("tecnicas") for m in momentos.values())
@@ -281,6 +299,13 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
         "autor_nombre": autor.get("nombre", ""), "autor_cargo": autor.get("cargo", "Instructor"),
         "autor_dependencia": autor.get("dependencia", ""), "autor_fecha": autor.get("fecha", ""),
         # trazabilidad (no va al formato): para instrumentos y portafolio
+        # evidencias detalladas: de aquí salen los instrumentos de evaluación
+        "_evidencias": [{"fase": a.get("fase") or bl["fase"],
+                         "actividad_proyecto": a.get("actividad_proyecto") or bl["actividad_proyecto"],
+                         "rap": a["rap"], "actividad": a["actividad"], "evidencia": a["evidencia"],
+                         "criterios": [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]}
+                        for a in bl["aas"]],
+        "_saberes": list(bl.get("saberes_conceptos", [])) + list(bl.get("saberes_proceso", [])),
         "_origen": {"planeacion": plan.get("_id", ""), "bloque": bl["indice"],
                     "tecnicas": {k: [t["id"] for t in (momentos.get(k, {}).get("tecnicas") or [])]
                                  for k in MOMENTOS}},

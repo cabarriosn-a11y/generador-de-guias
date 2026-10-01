@@ -306,7 +306,7 @@ with st.sidebar:
     if st.session_state.get("nav_ir_a"):
         st.session_state["nav"] = st.session_state.pop("nav_ir_a")
     seccion = st.radio(
-        "Navegación", key="nav", options=["🗓️ Planeación Pedagógica", "📗 Guía desde la planeación", "🆕 Nueva guía", "📋 Planes de Trabajo",
+        "Navegación", key="nav", options=["🗓️ Planeación Pedagógica", "📗 Guía desde la planeación", "📋 Instrumentos de evaluación", "🆕 Nueva guía", "📋 Planes de Trabajo",
          "📄 Proyectos Formativos", "📚 Diseños Curriculares",
          "🤖 Configurar IA", "✉️ Configurar correo",
          "🎨 Prompts de la IA", "⚙️ Cargar competencias",
@@ -2870,6 +2870,7 @@ def _tarjeta_tecnica(t, recomendada_para):
 def seccion_guia_desde_planeacion():
     from generadores.guia_desde_planeacion import (
         MOMENTOS, PESO_HORAS, cargar_atlas, bloques_de_planeacion, etiqueta_bloque, sugerir_tecnicas,
+        bloque_competencia_completa,
         aas_por_momento, descripcion_plantilla, armar_datos_guia, validar_guia, repartir)
     st.header("📗 Guía de aprendizaje desde la planeación (GFPI-F-135)")
     st.caption("La guía hereda de la planeación la identificación, los RAP, las actividades de aprendizaje "
@@ -2906,9 +2907,21 @@ def seccion_guia_desde_planeacion():
         return
 
     # ---- ② Bloque: una guía por actividad de proyecto (fase) de la competencia ----
-    bi = st.selectbox("② ¿Para qué fase / actividad del proyecto es la guía?", list(range(len(bloques))),
-                      format_func=lambda i: etiqueta_bloque(bloques[i]), key=f"guia_bloque_{pid}")
-    bl = bloques[bi]
+    # Opción extra: UNA guía con todos los RAP de la competencia (todas sus fases)
+    comps = list(dict.fromkeys(b["competencia"] for b in bloques))
+    combinados = {}
+    for k, comp in enumerate(comps):
+        grupo = [b for b in bloques if b["competencia"] == comp]
+        if len(grupo) > 1:
+            combinados[f"todas{k}"] = bloque_competencia_completa(grupo)
+    opciones_b = list(range(len(bloques))) + list(combinados)
+    bi = st.selectbox("② ¿Para qué fase / actividad del proyecto es la guía?", opciones_b,
+                      format_func=lambda i: ("📚 Toda la competencia en UNA guía (todos los RAP) · "
+                                             + etiqueta_bloque(combinados[i]))
+                      if i in combinados else etiqueta_bloque(bloques[i]), key=f"guia_bloque_{pid}",
+                      help="Puedes hacer una guía por fase o una sola guía con todos los RAP de la "
+                           "competencia; en la tabla de evidencias cada actividad conserva su fase.")
+    bl = combinados[bi] if bi in combinados else bloques[bi]
     clave = f"g_{pid}_{bi}"                          # prefijo de estado de esta guía
 
     with st.container(border=True):
@@ -3156,8 +3169,166 @@ def seccion_guia_desde_planeacion():
             if rj.exists():
                 st.download_button("💾 Respaldo de la guía (.json)", rj.read_bytes(), file_name=rj.name,
                                    mime="application/json", use_container_width=True)
+        if Path(ruta).with_suffix(".json").exists() and st.button(
+                "📋 Crear instrumentos de evaluación con esta guía", use_container_width=True):
+            st.session_state["ins_guia_pend"] = str(Path(ruta).with_suffix(".json"))
+            st.session_state["nav_ir_a"] = "📋 Instrumentos de evaluación"
+            st.rerun()
     st.caption("Técnicas: Atlas didáctico · Guías SENA (adaptación de «100 Técnicas Didácticas de Enseñanza y "
                "Aprendizaje», UnADM). No es una clasificación oficial de UnADM ni del SENA.")
+
+
+# ============ INSTRUMENTOS DE EVALUACIÓN DESDE LA GUÍA ============
+_COLS_INSTR = {
+    "lista_chequeo": {"indicador": "Indicador", "criterio": "Criterio del diseño"},
+    "rubrica": {"criterio": "Criterio del diseño", "excelente": "Excelente (4)", "bueno": "Bueno (3)",
+                "aceptable": "Aceptable (2)", "por_mejorar": "Por mejorar (1)"},
+    "cuestionario": {"enunciado": "Pregunta", "a": "a)", "b": "b)", "c": "c)", "d": "d)",
+                     "correcta": "Correcta", "justificacion": "Justificación (clave)"},
+}
+
+
+def _guias_con_trazabilidad():
+    salida = []
+    for f in sorted(GUIAS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(d, dict) and (d.get("_evidencias") or d.get("evidencias_tabla")):
+            salida.append((f, d))
+    return salida
+
+
+def seccion_instrumentos_evaluacion():
+    from generadores.instrumentos import (
+        TIPOS, REGLA_DEFECTO, evidencias_de_guia, contenido_base, generar_instrumentos_docx,
+    )
+    import pandas as pd
+
+    st.header("📋 Instrumentos de evaluación desde la guía")
+    st.caption("Lista de chequeo, rúbrica o cuestionario para cada evidencia de la guía, atados a los "
+               "criterios del diseño curricular. Los instrumentos no tienen formato institucional.")
+
+    guardadas = _guias_con_trazabilidad()
+    subida = st.file_uploader("…o sube el respaldo .json de una guía", type=["json"], key="ins_subida")
+    guia, gid = None, None
+    if subida is not None:
+        try:
+            guia, gid = json.loads(subida.getvalue().decode("utf-8")), re.sub(r"\W+", "_", subida.name)
+        except Exception as e:
+            st.error(f"No pude leer el JSON: {e}")
+    elif guardadas:
+        rutas = [str(f) for f, _ in guardadas]
+        pre = st.session_state.pop("ins_guia_pend", None)
+        if pre in rutas:
+            st.session_state["ins_guia_sel"] = pre
+        if st.session_state.get("ins_guia_sel") not in rutas:
+            st.session_state["ins_guia_sel"] = rutas[0]
+        datos_por_ruta = {str(f): d for f, d in guardadas}
+        sel = st.selectbox("① Guía de aprendizaje", rutas, key="ins_guia_sel",
+                           format_func=lambda r: f"{Path(r).stem} · {datos_por_ruta[r].get('fase_proyecto', '')[:30]}")
+        guia, gid = datos_por_ruta[sel], re.sub(r"\W+", "_", Path(sel).stem)
+    if not guia:
+        st.info("Primero genera una guía en «📗 Guía desde la planeación» (o sube su respaldo .json).")
+        return
+
+    items = evidencias_de_guia(guia)
+    if not items:
+        st.warning("La guía no tiene evidencias en la tabla 4.")
+        return
+    st.markdown(f"**{guia.get('competencia', '')[:120]}** · {len(items)} evidencia(s) evaluable(s)")
+    etiqueta = lambda i: (f"{i + 1}. {items[i]['tipo'].replace('desempeno', 'desempeño').capitalize()} · "
+                          f"{items[i]['evidencia'][:90]}")
+    elegidas = st.multiselect("② Evidencias a evaluar", list(range(len(items))), default=list(range(len(items))),
+                              format_func=etiqueta, key=f"ins_sel_{gid}")
+    cli = obtener_cliente_ia()
+    ctx = {k: guia.get(k, "") for k in ("programa", "proyecto_formativo", "competencia")}
+    ctx["saberes"] = guia.get("_saberes", [])
+
+    if cli and st.button("🤖 Generar TODOS los instrumentos con IA", use_container_width=True):
+        fallos = []
+        barra = st.progress(0.0)
+        for n, i in enumerate(elegidas):
+            tipo = st.session_state.get(f"ins_{gid}_{i}_tipo", items[i]["instrumento"])
+            try:
+                filas = cli.generar_instrumento(tipo, items[i], ctx)
+                if not filas:
+                    raise RuntimeError("respuesta vacía")
+                st.session_state[f"ins_{gid}_{i}_{tipo}"] = filas
+                st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
+            except Exception as e:
+                fallos.append(f"{etiqueta(i)[:50]}: {str(e)[:120]}")
+            barra.progress((n + 1) / max(len(elegidas), 1))
+        if fallos:
+            st.warning("Quedaron con plantilla (sin IA):\n\n" + "\n\n".join("• " + f for f in fallos))
+        st.rerun()
+    if not cli:
+        st.info("Sin IA configurada: se usa la plantilla (indicadores y rúbrica con los criterios del diseño, "
+                "cuestionario con preguntas abiertas).")
+
+    instrumentos = []
+    for i in elegidas:
+        it = items[i]
+        with st.expander(f"📌 {etiqueta(i)}", expanded=len(elegidas) <= 2):
+            st.caption(f"Fase: {it['fase']} · AA: {it['actividad'][:140]}")
+            if it["criterios"]:
+                st.markdown("🔒 **Criterios del diseño:** " + " · ".join(f"CE{k + 1:02d}" for k in range(len(it['criterios']))))
+            opciones = list(TIPOS)
+            if f"ins_{gid}_{i}_tipo" not in st.session_state:
+                st.session_state[f"ins_{gid}_{i}_tipo"] = it["instrumento"]
+            tipo = st.selectbox(f"Instrumento (⭐ sugerido: {TIPOS[it['instrumento']]})", opciones,
+                                key=f"ins_{gid}_{i}_tipo", format_func=TIPOS.get)
+            kc = f"ins_{gid}_{i}_{tipo}"
+            if kc not in st.session_state:
+                st.session_state[kc] = contenido_base(it, tipo, ctx["saberes"])
+            b1, b2 = st.columns(2)
+            if cli and b1.button("🤖 Generar con IA", key=f"{kc}_ia", use_container_width=True):
+                try:
+                    with st.spinner("Construyendo el instrumento…"):
+                        filas = cli.generar_instrumento(tipo, it, ctx)
+                    if filas:
+                        st.session_state[kc] = filas
+                        st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
+                        st.rerun()
+                    st.warning("La IA respondió vacío; queda la plantilla.")
+                except Exception as e:
+                    st.error(f"No se pudo con IA: {str(e)[:200]}")
+            if b2.button("📝 Volver a la plantilla", key=f"{kc}_pl", use_container_width=True):
+                st.session_state[kc] = contenido_base(it, tipo, ctx["saberes"])
+                st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
+                st.rerun()
+            cols = _COLS_INSTR[tipo]
+            df = pd.DataFrame([{c: f.get(c, "") for c in cols} for f in st.session_state[kc]], columns=list(cols))
+            editado = st.data_editor(
+                df, num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"{kc}_ed_{st.session_state.get(f'ins_{gid}_{i}_v', 0)}",
+                column_config={c: st.column_config.TextColumn(t, disabled=(c == "criterio" and tipo == "rubrica"))
+                               for c, t in cols.items()})
+            regla = st.text_input("Regla de aprobación", REGLA_DEFECTO[tipo], key=f"{kc}_regla")
+            filas = [{c: ("" if pd.isna(v) else str(v)) for c, v in r.items()}
+                     for r in editado.to_dict("records")]
+            filas = [f for f in filas if any(v.strip() for v in f.values())]
+            instrumentos.append({"item": it, "tipo": tipo, "contenido": filas, "regla": regla})
+
+    if instrumentos and st.button("🚀 Generar instrumentos (Word)", type="primary", use_container_width=True):
+        vacios = [TIPOS[x["tipo"]] for x in instrumentos if not x["contenido"]]
+        if vacios:
+            st.error("Hay instrumentos sin filas: " + ", ".join(vacios))
+        else:
+            ruta = GUIAS_DIR / f"Instrumentos_{gid[:40]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+            try:
+                generar_instrumentos_docx(guia, instrumentos, str(ruta))
+                st.session_state[f"ins_{gid}_archivo"] = str(ruta)
+                st.success(f"✅ {len(instrumentos)} instrumento(s) generados.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.exception(e)
+    ruta = st.session_state.get(f"ins_{gid}_archivo")
+    if ruta and Path(ruta).exists():
+        st.download_button("⬇️ Descargar instrumentos (Word)", Path(ruta).read_bytes(), file_name=Path(ruta).name,
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                           use_container_width=True)
 
 
 def _fila_planeacion_vacia():
@@ -3493,6 +3664,8 @@ elif seccion == "📗 Guía desde la planeación":
     seccion_guia_desde_planeacion()
 elif seccion == "🗓️ Planeación Pedagógica":
     seccion_planeacion_pedagogica()
+elif seccion == "📋 Instrumentos de evaluación":
+    seccion_instrumentos_evaluacion()
 elif seccion == "📄 Proyectos Formativos":
     seccion_proyectos_formativos()
 elif seccion == "📚 Diseños Curriculares":

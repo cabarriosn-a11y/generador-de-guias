@@ -715,6 +715,99 @@ REGLAS:
         return {"descripcion": str(res.get("descripcion", "")).strip(),
                 "apoyo": str(res.get("apoyo", "")).strip()}
 
+    # ---------- Instrumentos de evaluación desde la guía ----------
+    def generar_instrumento(self, tipo: str, item: dict, ctx: dict, n_preguntas: int = 8,
+                            instrucciones_extra: str = "") -> list:
+        """tipo: lista_chequeo | rubrica | cuestionario. Los criterios del diseño curricular se
+        respetan: cada fila se ata a un criterio por ÍNDICE y el texto del criterio se pone
+        verbatim desde el diseño (la IA no puede cambiarlo)."""
+        crit = item.get("criterios") or []
+        lista_c = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(crit)) or "(sin criterios: usa la evidencia)"
+        contexto = f"""- Programa: {ctx.get('programa', '')}
+- Proyecto formativo: {ctx.get('proyecto_formativo', '')}
+- Fase / actividad del proyecto: {item.get('fase', '')} · {item.get('actividad_proyecto', '')}
+- Competencia: {ctx.get('competencia', '')}
+- Resultado de aprendizaje: {item.get('rap', '')}
+- Actividad de aprendizaje (V+O+C): {item.get('actividad', '')}
+- Evidencia ({item.get('tipo', '')}): {item.get('evidencia', '')}
+- Criterios de evaluación del diseño curricular (numerados):
+{lista_c}"""
+        if tipo == "cuestionario":
+            saberes = "; ".join((ctx.get("saberes") or [])[:20])
+            formato = (f'{{"preguntas": [{{"enunciado": "...", "a": "...", "b": "...", "c": "...", "d": "...", '
+                       f'"correcta": "a|b|c|d", "justificacion": "por qué es la correcta"}}]}}  '
+                       f"→ exactamente {n_preguntas} preguntas de selección múltiple con única respuesta, "
+                       f"basadas en estos saberes del diseño curricular: {saberes}. Distractores plausibles, "
+                       "sin «todas/ninguna de las anteriores», respuestas correctas repartidas entre a, b, c y d.")
+        elif tipo == "rubrica":
+            formato = ('{"filas": [{"criterio": <número del criterio>, "excelente": "...", "bueno": "...", '
+                       '"aceptable": "...", "por_mejorar": "..."}]}  → UNA fila por cada criterio numerado; '
+                       "descriptores observables y graduados (calidad, completitud, autonomía), 15-35 palabras "
+                       "cada uno, referidos a la evidencia concreta.")
+        else:
+            formato = ('{"indicadores": [{"criterio": <número del criterio>, "indicador": "..."}]}  → 1 a 3 '
+                       "indicadores OBSERVABLES por criterio (verificables con Sí/No), redactados en tercera "
+                       "persona y presente (p. ej. «Identifica…», «Presenta…»), sobre la evidencia concreta.")
+        prompt = f"""Construye un instrumento de evaluación SENA ({tipo.replace('_', ' ')}) para esta evidencia.
+
+{contexto}
+
+Responde ÚNICAMENTE con JSON válido, sin markdown:
+{formato}
+
+REGLAS:
+1. No inventes criterios: todo se ata a los criterios numerados del diseño curricular.
+2. Usa solo el contexto del programa y del proyecto; no nombres empresas que no aparezcan ahí.
+3. Lenguaje claro para el aprendiz; nada de software o equipos como requisito."""
+        prompt = self._aplicar_extra(prompt, instrucciones_extra)
+        res = self._parsear_json(self._llamar(prompt))
+
+        def _idx(v):
+            try:
+                i = int(v) - 1
+                return i if 0 <= i < len(crit) else None
+            except (TypeError, ValueError):
+                return None
+
+        def vistos_txt(filas):
+            return {f["criterio"] for f in filas}
+
+        if tipo == "cuestionario":
+            filas = res.get("preguntas", []) if isinstance(res, dict) else res
+            salida = []
+            for q in filas or []:
+                if isinstance(q, dict) and str(q.get("enunciado", "")).strip():
+                    salida.append({k: str(q.get(k, "")).strip() for k in
+                                   ("enunciado", "a", "b", "c", "d", "correcta", "justificacion")})
+                    salida[-1]["correcta"] = salida[-1]["correcta"][:1].lower()
+            return salida
+        if tipo == "rubrica":
+            filas = res.get("filas", []) if isinstance(res, dict) else res
+            salida, vistos = [], set()
+            for f in filas or []:
+                i = _idx(f.get("criterio")) if isinstance(f, dict) else None
+                if i is None or i in vistos:
+                    continue
+                vistos.add(i)
+                salida.append({"criterio": crit[i], **{k: str(f.get(k, "")).strip() for k in
+                                                       ("excelente", "bueno", "aceptable", "por_mejorar")}})
+            # criterios que la IA dejó sin fila o niveles vacíos → plantilla (nada queda en blanco)
+            from .instrumentos import rubrica_base
+            base = {f["criterio"]: f for f in rubrica_base(item)}
+            for f in salida:
+                for k in ("excelente", "bueno", "aceptable", "por_mejorar"):
+                    f[k] = f[k] or base.get(f["criterio"], {}).get(k, "")
+            salida += [base[c] for c in crit if c not in vistos_txt(salida) and c in base]
+            return sorted(salida, key=lambda x: crit.index(x["criterio"]) if x["criterio"] in crit else 999)
+        filas = res.get("indicadores", []) if isinstance(res, dict) else res
+        salida = []
+        for f in filas or []:
+            if isinstance(f, dict) and str(f.get("indicador", "")).strip():
+                i = _idx(f.get("criterio"))
+                salida.append({"indicador": str(f["indicador"]).strip(),
+                               "criterio": crit[i] if i is not None else ""})
+        return salida
+
     # ---------- helpers internos ----------
     def _respetar_pausa(self):
         transcurrido = time.time() - self._ultima_llamada_ts
