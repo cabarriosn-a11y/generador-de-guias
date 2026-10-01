@@ -2951,8 +2951,69 @@ def seccion_guia_desde_planeacion():
     pend = st.session_state.pop(f"{clave}_pend_pres", None)
     if pend is not None:
         st.session_state[f"{clave}_pres"] = pend
+    pend = st.session_state.pop(f"{clave}_pend_glos", None)
+    if pend is not None:
+        st.session_state[f"{clave}_glos"] = pend
 
     st.subheader("③ Momentos de la guía")
+    estado_vacios = [k for k in MOMENTOS if not str(st.session_state.get(f"{clave}_desc_{k}", "")).strip()]
+    g1, g2 = st.columns([1.4, 1])
+    with g1:
+        todo_ia = st.button("🤖 Redactar TODA la guía con IA (momentos, presentación y glosario)",
+                            type="primary", use_container_width=True, disabled=not cli_ia, key=f"{clave}_todo",
+                            help=None if cli_ia else "Configura Gemini en «🤖 Configurar IA».")
+    with g2:
+        todo_tpl = st.button("📝 Llenar lo vacío con plantilla (sin IA)", use_container_width=True,
+                             key=f"{clave}_todo_tpl")
+    if estado_vacios:
+        st.caption("Momentos sin descripción: " + ", ".join(estado_vacios)
+                   + " — si generas así, se llenan con la plantilla automáticamente.")
+    if todo_ia or todo_tpl:
+        errores = []
+        barra = st.progress(0.0, text="Preparando…")
+        for n, k in enumerate(MOMENTOS, 1):
+            sel = st.session_state.get(f"{clave}_tec_{k}") or []
+            tecs_k = [por_id[i] for i in sel if i in por_id]
+            res = None
+            if todo_ia:
+                try:
+                    barra.progress((n - 1) / 6, text=f"Redactando {k} {MOMENTOS[k]['nombre']}…")
+                    res = cli_ia.redactar_momento(k, MOMENTOS[k]["nombre"], MOMENTOS[k]["proposito"],
+                                                  ctx_ia, tecs_k, reparto.get(k, []))
+                except Exception as e:
+                    errores.append(f"{k}: {e}")
+            elif str(st.session_state.get(f"{clave}_desc_{k}", "")).strip():
+                continue                                    # plantilla: solo lo vacío
+            if not res or not res.get("descripcion"):
+                res = {"descripcion": descripcion_plantilla(k, tecs_k[0] if tecs_k else None, bl,
+                                                            reparto.get(k, [])), "apoyo": ""}
+            st.session_state[f"{clave}_pend_{k}"] = res
+        if todo_ia:
+            try:
+                barra.progress(4 / 6, text="Redactando la presentación…")
+                st.session_state[f"{clave}_pend_pres"] = cli_ia.generar_presentacion(
+                    {**ctx_ia, "duracion": f"{bl['horas']} horas"})
+            except Exception as e:
+                errores.append(f"presentación: {e}")
+            try:
+                barra.progress(5 / 6, text="Redactando el glosario…")
+                datos_g = {"competencia": bl["competencia"],
+                           "presentacion": st.session_state.get(f"{clave}_pres", ""),
+                           "actividades": {k: {"descripcion": st.session_state.get(f"{clave}_pend_{k}", {}).get("descripcion", "")}
+                                           for k in MOMENTOS}}
+                glos = cli_ia.generar_glosario(datos_g)
+                st.session_state[f"{clave}_pend_glos"] = "\n".join(f"{t} | {d}" for t, d in glos)
+            except Exception as e:
+                errores.append(f"glosario: {e}")
+        st.session_state[f"{clave}_msg_todo"] = errores
+        st.rerun()
+    msg_todo = st.session_state.pop(f"{clave}_msg_todo", None)
+    if msg_todo is not None:
+        if msg_todo:
+            st.warning("Algunas partes no las pudo redactar la IA y quedaron con la plantilla: "
+                       + " · ".join(m[:120] for m in msg_todo))
+        else:
+            st.success("✅ Guía completa: revisa cada momento y ajusta lo que quieras.")
     usadas = set()
     momentos = {}
     tabs = st.tabs([f"{k} {v['nombre'].split(' e ')[0]}" for k, v in MOMENTOS.items()])
@@ -3048,6 +3109,10 @@ def seccion_guia_desde_planeacion():
         if not avisos:
             st.success("Guía coherente con la planeación.")
     if st.button("🚀 Generar guía de aprendizaje (Word GFPI-F-135)", type="primary", use_container_width=True):
+        for k, m in momentos.items():
+            if not str(m.get("descripcion", "")).strip():
+                m["descripcion"] = descripcion_plantilla(k, (m.get("tecnicas") or [None])[0], bl,
+                                                         reparto.get(k, []))
         datos = armar_datos_guia(plan, bl, momentos, presentacion, glosario,
                                  [r for r in refs_txt.splitlines() if r.strip()],
                                  {"nombre": autor, "dependencia": dependencia, "fecha": fecha})

@@ -295,7 +295,7 @@ def validar_guia(bl: dict, momentos: dict) -> list:
     for k, info in MOMENTOS.items():
         m = momentos.get(k, {})
         if not str(m.get("descripcion", "")).strip():
-            avisos.append(f"{k} {info['nombre']}: falta la descripción.")
+            avisos.append(f"{k} {info['nombre']}: sin descripción (al generar se llena con la plantilla; mejor redáctala con IA).")
         if not m.get("tecnicas"):
             avisos.append(f"{k} {info['nombre']}: no tiene técnica didáctica.")
         for t in m.get("tecnicas") or []:
