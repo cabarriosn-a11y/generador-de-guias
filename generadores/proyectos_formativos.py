@@ -29,7 +29,7 @@ def parsear_info_basica(texto: str) -> dict:
     # Los códigos vienen ANTES de sus etiquetas en el texto extraído por pypdf.
     # Patrón real: "2785526 122901Código del Programa SOFIA: Versión del Programa: 1 5Fichas asociadas:"
     # Estrategia: buscar los números que preceden a las etiquetas.
-    m = re.search(r"(\d{7,})\s+(\d{6})Código del Programa SOFIA:", texto)
+    m = re.search(r"(\d{7,})\s+(\d{5,6})\s*Código del Programa SOFIA:", texto)
     if m:
         info["codigo_proyecto_sofia"] = m.group(1)
         info["codigo_programa_sofia"] = m.group(2)
@@ -39,7 +39,7 @@ def parsear_info_basica(texto: str) -> dict:
         if m: info["codigo_proyecto_sofia"] = m.group(1)
 
     # Versión y fichas: patrón "Versión del Programa: 1 5Fichas asociadas:"
-    m = re.search(r"Versión del Programa:\s*(\d+)\s+(\d+)Fichas asociadas", texto)
+    m = re.search(r"Versión del Programa:\s*(\d+)\s+(\d+)\s*Fichas asociadas", texto)
     if m:
         info["version_programa"] = m.group(1)
         info["fichas_asociadas"] = m.group(2)
@@ -402,6 +402,11 @@ def _agrupar_actividades_similares(filas: list) -> dict:
     return mapa
 
 
+def _quitar_tildes(t: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", t or "") if unicodedata.category(c) != "Mn")
+
+
 def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
     """Convierte las filas planas en una estructura jerárquica:
     Proyecto → Fases → Actividades → Competencias → RAPs
@@ -479,7 +484,19 @@ def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
         if nombre_fase and nombre_fase not in orden_aparicion:
             orden_aparicion[nombre_fase] = i
     # Ordenar la lista de fases según su primera aparición
-    fases_lista.sort(key=lambda f: orden_aparicion.get(f["nombre"], 99))
+    # Orden pedagógico conocido (SOFIA lista las fases alfabéticamente): Inducción → Análisis →
+    # Planeación → Ejecución → Evaluación → Etapa práctica. Fases desconocidas: orden del PDF.
+    def _rango_pedagogico(nombre):
+        n = _quitar_tildes(nombre).upper()
+        for k, claves in enumerate((("INDUCC",), ("ANALISIS", "DIAGNOST", "IDENTIFIC"),
+                                    ("PLANEA", "PLANEAR", "DISENO", "FORMULAC"),
+                                    ("EJECUC", "HACER", "EJECUTAR", "IMPLEMENT", "DESARROLLO"),
+                                    ("EVALUAC", "VERIFICAR", "ACTUAR", "CONTROL"),
+                                    ("ETAPA PRACT", "ETAPA PRODUCT"))):
+            if any(c in n for c in claves):
+                return k
+        return 50
+    fases_lista.sort(key=lambda f: (_rango_pedagogico(f["nombre"]), orden_aparicion.get(f["nombre"], 99)))
 
     # Consolidar todas las competencias del proyecto (para acceso rápido)
     todas_competencias = {}
@@ -513,7 +530,20 @@ def procesar_pdf(pdf_bytes: bytes) -> dict:
     """Procesa un PDF completo y devuelve el proyecto estructurado."""
     texto = extraer_texto_pdf(pdf_bytes)
     info = parsear_info_basica(texto)
-    filas = parsear_tabla_planeacion(texto)
+    # v2: lee la tabla por sus líneas (robusto con fases PHVA, columnas variables y filas
+    # partidas entre páginas). Si no encuentra la tabla, usa el parser de texto anterior.
+    filas = []
+    try:
+        import io
+        from .parsers_pdf_v2 import parsear_tabla_proyecto
+        filas = [{"fase": r["fase"], "actividad": r["actividad"],
+                  "codigo_competencia": r["comp_codigo"], "nombre_competencia": r["competencia"],
+                  "codigo_rap": r["rap_codigo"], "nombre_rap": r["rap"]}
+                 for r in parsear_tabla_proyecto(io.BytesIO(pdf_bytes)) if r["rap_codigo"]]
+    except Exception:
+        filas = []
+    if not filas:
+        filas = parsear_tabla_planeacion(texto)
     proyecto = estructurar_proyecto(info, filas)
     return proyecto
 

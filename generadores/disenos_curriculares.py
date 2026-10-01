@@ -284,7 +284,24 @@ def procesar_pdf(pdf_bytes: bytes) -> dict:
     """Procesa un PDF de diseño curricular y devuelve un dict estructurado."""
     texto = extraer_texto_pdf(pdf_bytes)
     info = parsear_info_programa(texto)
-    competencias = parsear_competencias(texto)
+    # v2: une renglones partidos con reglas de verbo y ancho real, sin encabezados de página.
+    competencias = []
+    try:
+        import io
+        from .parsers_pdf_v2 import parsear_diseno
+        _v2 = parsear_diseno(io.BytesIO(pdf_bytes))
+        if not info.get("denominacion") and _v2.get("denominacion"):
+            info["denominacion"] = _v2["denominacion"]
+        info.setdefault("codigo_programa", _v2.get("codigo", ""))
+        info.setdefault("version_programa", _v2.get("version", ""))
+        competencias = [
+            {k: c[k] for k in ("codigo", "nombre", "duracion_horas", "raps", "conocimientos_proceso",
+                               "conocimientos_saber", "criterios_evaluacion")} | {"norma": c.get("norma", "")}
+            for c in _v2["competencias"] if c["codigo"]]
+    except Exception:
+        competencias = []
+    if not competencias:
+        competencias = parsear_competencias(texto)
     return {
         **info,
         "competencias": competencias,
