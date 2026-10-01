@@ -303,9 +303,10 @@ with st.sidebar:
     st.markdown("### 📘 ProfeNaturales SENA")
     st.markdown("**Generador con IA (Gemini)**")
     st.markdown("---")
+    if st.session_state.get("nav_ir_a"):
+        st.session_state["nav"] = st.session_state.pop("nav_ir_a")
     seccion = st.radio(
-        "Navegación",
-        ["🆕 Nueva guía", "📋 Planes de Trabajo", "🗓️ Planeación Pedagógica",
+        "Navegación", key="nav", options=["🗓️ Planeación Pedagógica", "📗 Guía desde la planeación", "🆕 Nueva guía", "📋 Planes de Trabajo",
          "📄 Proyectos Formativos", "📚 Diseños Curriculares",
          "🤖 Configurar IA", "✉️ Configurar correo",
          "🎨 Prompts de la IA", "⚙️ Cargar competencias",
@@ -2112,6 +2113,11 @@ def seccion_planeacion_pedagogica():
             ruta = str(PLANEACIONES_DIR / f"Planeacion_{safe}{('_' + sufijo) if sufijo else ''}_{ts}.xlsx")
             with st.spinner("Generando planeación en el formato oficial GFPI-F-134..."):
                 generar_planeacion(datos, ruta)
+            # Copia en JSON: es la fuente de la guía de aprendizaje (y se puede descargar/recargar)
+            datos["_id"] = Path(ruta).stem
+            datos["_meta"] = st.session_state.get("planeacion_meta", {})
+            Path(ruta).with_suffix(".json").write_text(
+                json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
             st.session_state.ultimo_archivo_planeacion = ruta
             st.session_state.ultimo_datos_planeacion = datos
             st.success("✅ Planeación generada sobre la plantilla oficial (logo, clasificación, "
@@ -2130,6 +2136,20 @@ def seccion_planeacion_pedagogica():
                     f.read(), file_name=Path(ruta).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True)
+            rj = Path(ruta).with_suffix(".json")
+            if rj.exists():
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button("💾 Respaldo de la planeación (.json)", rj.read_bytes(),
+                                       file_name=rj.name, mime="application/json", use_container_width=True,
+                                       help="Guárdelo: si la app se reinicia, súbalo en «Guía desde la "
+                                            "planeación» y sigue donde iba.")
+                with c2:
+                    if st.button("📗 Crear la guía de aprendizaje con esta planeación", type="primary",
+                                 use_container_width=True):
+                        st.session_state["guia_plan_id"] = rj.stem
+                        st.session_state["nav_ir_a"] = "📗 Guía desde la planeación"
+                        st.rerun()
 
 
 # ============ PLANEACIÓN: EDITOR POR RAP (formato de referencia GFPI-F-134) ============
@@ -2818,6 +2838,246 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
     return filas_editadas
 
 
+# ============ GUÍA DE APRENDIZAJE DESDE LA PLANEACIÓN (GFPI-F-135) ============
+def _planeaciones_guardadas():
+    PLANEACIONES_DIR.mkdir(parents=True, exist_ok=True)
+    out = []
+    for f in sorted(PLANEACIONES_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            d["_id"] = d.get("_id") or f.stem
+            out.append(d)
+        except Exception:
+            pass
+    return out
+
+
+def _etq_plan(d):
+    comp = (d.get("filas") or [{}])[0].get("competencia", "")
+    return f"{comp[:60]} · {len(d.get('filas', []))} fase(s) · {d['_id'][-15:]}"
+
+
+def _tarjeta_tecnica(t, recomendada_para):
+    from generadores.guia_desde_planeacion import MOMENTOS
+    otro = t["moment"] != recomendada_para
+    nombre_mom = {v["letra"]: v["nombre"] for v in MOMENTOS.values()}[t["moment"]]
+    st.markdown(f"**{t['id']:02d} · {t['name']}** · _{t['category']}_ · recomendada en **{nombre_mom}**"
+                + (" ⚠️" if otro else ""))
+    st.caption(f"{t['description']}  \n**Por qué:** {t['why']}  \n**Ejemplo:** {t['example']}  \n"
+               f"**Qué recoger:** {t['evidence']}  \n[Ficha UnADM ↗]({t['source']})")
+
+
+def seccion_guia_desde_planeacion():
+    from generadores.guia_desde_planeacion import (
+        MOMENTOS, PESO_HORAS, cargar_atlas, bloques_de_planeacion, etiqueta_bloque, sugerir_tecnicas,
+        aas_por_momento, descripcion_plantilla, armar_datos_guia, validar_guia, repartir)
+    st.header("📗 Guía de aprendizaje desde la planeación (GFPI-F-135)")
+    st.caption("La guía hereda de la planeación la identificación, los RAP, las actividades de aprendizaje "
+               "(V+O+C), las evidencias, los criterios, las horas, el ambiente y los materiales. Aquí solo "
+               "diseñas cómo se desarrolla cada momento, con técnicas del Atlas didáctico (100 técnicas).")
+
+    # ---- ① Planeación de origen ----
+    planes = _planeaciones_guardadas()
+    with st.expander("① Planeación de origen", expanded=True):
+        subida = st.file_uploader("¿La app se reinició? Sube aquí el respaldo .json de tu planeación",
+                                  type=["json"], key="guia_plan_upload")
+        if subida is not None:
+            try:
+                d = json.loads(subida.getvalue().decode("utf-8"))
+                d["_id"] = d.get("_id") or Path(subida.name).stem
+                PLANEACIONES_DIR.mkdir(parents=True, exist_ok=True)
+                (PLANEACIONES_DIR / f"{d['_id']}.json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+                st.session_state["guia_plan_id"] = d["_id"]
+                planes = _planeaciones_guardadas()
+            except Exception as e:
+                st.error(f"No pude leer el respaldo: {e}")
+        if not planes:
+            st.info("Primero genera una planeación en «🗓️ Planeación Pedagógica» (o sube su respaldo .json).")
+            return
+        ids = [d["_id"] for d in planes]
+        pre = st.session_state.get("guia_plan_id")
+        idx = ids.index(pre) if pre in ids else 0
+        pid = st.selectbox("Planeación", ids, index=idx, format_func=lambda i: _etq_plan(planes[ids.index(i)]),
+                           key="guia_plan_sel")
+    plan = planes[ids.index(pid)]
+    bloques = bloques_de_planeacion(plan)
+    if not bloques:
+        st.warning("Esa planeación no tiene filas.")
+        return
+
+    # ---- ② Bloque: una guía por actividad de proyecto (fase) de la competencia ----
+    bi = st.selectbox("② ¿Para qué fase / actividad del proyecto es la guía?", list(range(len(bloques))),
+                      format_func=lambda i: etiqueta_bloque(bloques[i]), key=f"guia_bloque_{pid}")
+    bl = bloques[bi]
+    clave = f"g_{pid}_{bi}"                          # prefijo de estado de esta guía
+
+    with st.container(border=True):
+        st.markdown("##### 🔒 Lo que viene de la planeación")
+        c1, c2 = st.columns([1.3, 1])
+        with c1:
+            st.markdown(f"**Programa:** {plan.get('programa', '')} ({plan.get('codigo_programa', '')})  \n"
+                        f"**Proyecto:** {plan.get('proyecto_formativo', '')[:140]}  \n"
+                        f"**Fase:** {bl['fase']}  \n**Actividad del proyecto:** {bl['actividad_proyecto'][:160]}  \n"
+                        f"**Competencia:** {bl['competencia']}")
+            st.markdown("**RAP:**  \n" + "  \n".join(f"• {r}" for r in bl["raps"]))
+        with c2:
+            st.metric("Duración de la guía", f"{bl['horas']} h")
+            st.markdown("**Actividades de aprendizaje (V+O+C) → evidencia:**")
+            for a in bl["aas"]:
+                st.caption(f"• {a['actividad'] or '— (sin redactar en la planeación)'}  \n  ↳ {a['evidencia'] or '—'}")
+        if not any(a["actividad"] for a in bl["aas"]):
+            st.warning("Las actividades de aprendizaje están vacías en la planeación: complétalas allá primero "
+                       "para que la guía quede enlazada.")
+
+    # ---- ③ Momentos 3.1–3.4 con técnicas del Atlas ----
+    atlas = cargar_atlas()
+    por_id = {t["id"]: t for t in atlas}
+    reparto = aas_por_momento(bl)
+    contexto_txt = " ".join([bl["actividad_proyecto"], " ".join(bl["raps"]),
+                             " ".join(a["actividad"] for a in bl["aas"])])
+    horas_def = dict(zip(MOMENTOS, repartir(bl["horas"], [PESO_HORAS[k] for k in MOMENTOS])))
+    cli_ia = obtener_cliente_ia()
+    ctx_ia = {"programa": plan.get("programa", ""), "proyecto_formativo": plan.get("proyecto_formativo", ""),
+              "fase": bl["fase"], "actividad_proyecto": bl["actividad_proyecto"],
+              "competencia": bl["competencia"], "raps": bl["raps"],
+              "saberes": bl["saberes_conceptos"] + bl["saberes_proceso"]}
+
+    # aplicar resultados pendientes de IA antes de crear los widgets
+    for k in MOMENTOS:
+        pend = st.session_state.pop(f"{clave}_pend_{k}", None)
+        if pend:
+            st.session_state[f"{clave}_desc_{k}"] = pend.get("descripcion", "")
+            st.session_state[f"{clave}_apoyo_{k}"] = pend.get("apoyo", "")
+    pend = st.session_state.pop(f"{clave}_pend_pres", None)
+    if pend is not None:
+        st.session_state[f"{clave}_pres"] = pend
+
+    st.subheader("③ Momentos de la guía")
+    usadas = set()
+    momentos = {}
+    tabs = st.tabs([f"{k} {v['nombre'].split(' e ')[0]}" for k, v in MOMENTOS.items()])
+    for tab, (k, info) in zip(tabs, MOMENTOS.items()):
+        with tab:
+            st.caption(f"**Propósito (GFPI-G-060):** {info['proposito']}")
+            aas_k = reparto.get(k, [])
+            if aas_k:
+                st.caption("**Desarrolla:** " + " · ".join(a["actividad"] for a in aas_k if a["actividad"]))
+            evid = " ".join(a["evidencia"] for a in aas_k)
+            sugeridas = sugerir_tecnicas(atlas, k, contexto_txt, bl["raps"], evid, n=6, excluir=usadas)
+            ids_sug = [t["id"] for _, t in sugeridas]
+            st.caption("⭐ **Sugeridas para este momento:** " +
+                       " · ".join(f"{i:02d} {por_id[i]['name']}" for i in ids_sug))
+            # opciones SIEMPRE iguales (las 100, en orden): si cambiaran entre recargas,
+            # Streamlit borraría la selección
+            opciones = [t["id"] for t in atlas]
+            sel_key = f"{clave}_tec_{k}"
+            if sel_key not in st.session_state:
+                st.session_state[sel_key] = ids_sug[:1]
+            elegidas = st.multiselect(
+                "Técnica(s) didáctica(s) activa(s) — escriba para buscar entre las 100", opciones,
+                key=sel_key, max_selections=2,
+                format_func=lambda i, sug=tuple(ids_sug), le=info["letra"]:
+                    ("⭐ " if i in sug else "") + f"{i:02d} · {por_id[i]['name']}"
+                    + ("" if por_id[i]["moment"] == le else " ⚠️ otro momento"),
+                help="⭐ = sugeridas según el momento, el verbo del RAP, las actividades y la evidencia "
+                     "de la planeación. Puede elegir cualquiera de las 100.")
+            tecs = [por_id[i] for i in elegidas if i in por_id]
+            usadas |= set(elegidas)
+            for t in tecs:
+                with st.container(border=True):
+                    _tarjeta_tecnica(t, info["letra"])
+            c1, c2 = st.columns([1, 3])
+            with c1:
+                horas = st.number_input("Horas", 0, 2000, key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
+                if st.button("🤖 Redactar con IA", key=f"{clave}_ia_{k}", disabled=not cli_ia,
+                             use_container_width=True):
+                    try:
+                        with st.spinner("Redactando con la técnica elegida…"):
+                            st.session_state[f"{clave}_pend_{k}"] = cli_ia.redactar_momento(
+                                k, info["nombre"], info["proposito"], ctx_ia, tecs, aas_k)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"IA: {e}")
+                if st.button("📝 Usar plantilla", key=f"{clave}_tpl_{k}", use_container_width=True,
+                             help="Texto base con la técnica y las actividades de la planeación (sin IA)."):
+                    st.session_state[f"{clave}_pend_{k}"] = {
+                        "descripcion": descripcion_plantilla(k, tecs[0] if tecs else None, bl, aas_k),
+                        "apoyo": ""}
+                    st.rerun()
+            with c2:
+                desc = st.text_area("Descripción de la actividad", height=180,
+                                    key=_init_estado(f"{clave}_desc_{k}", ""))
+                apoyo = st.text_input("Material de apoyo", key=_init_estado(f"{clave}_apoyo_{k}", ""))
+            if k in ("3.3", "3.4") and aas_k:
+                st.caption("**Evidencias (de la planeación):** " + " | ".join(a["evidencia"] for a in aas_k if a["evidencia"]))
+            momentos[k] = {"tecnicas": tecs, "descripcion": desc, "apoyo": apoyo, "horas": horas}
+
+    # ---- ④ Presentación, glosario, autor ----
+    st.subheader("④ Presentación, glosario y control del documento")
+    p1, p2 = st.columns([3, 1])
+    with p2:
+        if st.button("🤖 Presentación con IA", disabled=not cli_ia, use_container_width=True, key=f"{clave}_pres_ia"):
+            try:
+                st.session_state[f"{clave}_pend_pres"] = cli_ia.generar_presentacion(
+                    {**ctx_ia, "duracion": f"{bl['horas']} horas"})
+                st.rerun()
+            except Exception as e:
+                st.error(f"IA: {e}")
+    with p1:
+        presentacion = st.text_area("Presentación", height=140, key=_init_estado(f"{clave}_pres", ""))
+    glos_txt = st.text_area("Glosario (un término por línea: término | definición)", height=100,
+                            key=_init_estado(f"{clave}_glos", ""))
+    glosario = [tuple(x.split("|", 1)) for x in glos_txt.splitlines() if "|" in x]
+    refs_txt = st.text_area("Referentes bibliográficos adicionales (uno por línea, APA)", height=70,
+                            key=_init_estado(f"{clave}_refs", ""))
+    cfg = cargar_config()
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        autor = st.text_input("Autor", key=_init_estado(f"{clave}_autor", cfg.get("autor_default", "")))
+    with a2:
+        dependencia = st.text_input("Dependencia", key=_init_estado(
+            f"{clave}_dep", plan.get("regional_centro", "Centro Industrial y de Energías Alternativas")))
+    with a3:
+        fecha = st.date_input("Fecha", key=f"{clave}_fecha").strftime("%d/%m/%Y")
+
+    # ---- ⑤ Revisión y generación ----
+    avisos = validar_guia(bl, momentos)
+    with st.expander(f"🔎 Revisión ({len(avisos)} aviso(s))", expanded=bool(avisos)):
+        for a in avisos:
+            st.write("• " + a)
+        if not avisos:
+            st.success("Guía coherente con la planeación.")
+    if st.button("🚀 Generar guía de aprendizaje (Word GFPI-F-135)", type="primary", use_container_width=True):
+        datos = armar_datos_guia(plan, bl, momentos, presentacion, glosario,
+                                 [r for r in refs_txt.splitlines() if r.strip()],
+                                 {"nombre": autor, "dependencia": dependencia, "fecha": fecha})
+        GUIAS_DIR.mkdir(parents=True, exist_ok=True)
+        base = re.sub(r"\W+", "_", f"Guia_{bl['competencia'][:20]}_{bl['fase'][:12]}")[:60]
+        ruta = GUIAS_DIR / f"{base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        try:
+            generar_guia_aprendizaje(datos, str(ruta))
+            ruta.with_suffix(".json").write_text(json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
+            st.session_state[f"{clave}_archivo"] = str(ruta)
+            st.success("✅ Guía generada sobre la plantilla oficial GFPI-F-135, enlazada a la planeación.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.exception(e)
+    ruta = st.session_state.get(f"{clave}_archivo")
+    if ruta and Path(ruta).exists():
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button("⬇️ Descargar guía (Word)", Path(ruta).read_bytes(), file_name=Path(ruta).name,
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                               use_container_width=True)
+        with d2:
+            rj = Path(ruta).with_suffix(".json")
+            if rj.exists():
+                st.download_button("💾 Respaldo de la guía (.json)", rj.read_bytes(), file_name=rj.name,
+                                   mime="application/json", use_container_width=True)
+    st.caption("Técnicas: Atlas didáctico · Guías SENA (adaptación de «100 Técnicas Didácticas de Enseñanza y "
+               "Aprendizaje», UnADM). No es una clasificación oficial de UnADM ni del SENA.")
+
+
 def _fila_planeacion_vacia():
     return {
         "fase": "", "actividad_proyecto": "", "competencia": "", "raps": "",
@@ -3147,6 +3407,8 @@ if seccion == "🆕 Nueva guía":
     seccion_nueva_guia()
 elif seccion == "📋 Planes de Trabajo":
     seccion_planes_trabajo()
+elif seccion == "📗 Guía desde la planeación":
+    seccion_guia_desde_planeacion()
 elif seccion == "🗓️ Planeación Pedagógica":
     seccion_planeacion_pedagogica()
 elif seccion == "📄 Proyectos Formativos":

@@ -660,6 +660,61 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
                 salida.append(elegido)
         return salida
 
+    # ---------- Guía desde la planeación: redactar un momento con una técnica del atlas ----------
+    def redactar_momento(self, momento: str, nombre_momento: str, proposito: str, ctx: dict,
+                         tecnicas: list, aas: list, instrucciones_extra: str = "") -> dict:
+        """Redacta 'Descripción de la actividad' y 'Material de apoyo' de un momento de la guía
+        GFPI-F-135, aplicando la(s) técnica(s) elegida(s) del Atlas y SIN cambiar lo que ya
+        fijó la planeación (RAP, actividades V+O+C, evidencias)."""
+        bloque_tec = "\n".join(
+            f"- {t['name']}: {t['description']} Por qué en este momento: {t['why']} "
+            f"Ejemplo orientador (adáptalo, no lo copies): {t['example']} Evidencia orientadora: {t['evidence']}"
+            for t in tecnicas) or "- (sin técnica elegida: propón una activa coherente con el propósito)"
+        bloque_aa = "\n".join(f"- {a['actividad']} → Evidencia: {a['evidencia']}" for a in aas if a.get("actividad"))
+        prompt = f"""Redacta el momento {momento} «{nombre_momento}» de una GUÍA DE APRENDIZAJE SENA (GFPI-F-135).
+
+PROPÓSITO DEL MOMENTO (GFPI-G-060): {proposito}
+
+DATOS DE LA PLANEACIÓN (no los cambies):
+- Programa: {ctx.get('programa', '')}
+- Proyecto formativo: {ctx.get('proyecto_formativo', '')}
+- Fase: {ctx.get('fase', '')} · Actividad del proyecto: {ctx.get('actividad_proyecto', '')}
+- Competencia: {ctx.get('competencia', '')}
+- Resultados de aprendizaje: {"; ".join(ctx.get('raps', []))}
+- Saberes del diseño curricular para estos RAP: {"; ".join(ctx.get('saberes', [])[:12])}
+{("- Actividades de aprendizaje de la planeación (V+O+C) que este momento debe desarrollar:" + chr(10) + bloque_aa) if bloque_aa else ""}
+
+TÉCNICA(S) DIDÁCTICA(S) ELEGIDA(S) POR EL INSTRUCTOR (Atlas didáctico, UnADM):
+{bloque_tec}
+
+Responde ÚNICAMENTE con JSON válido, sin markdown:
+{{"descripcion": "Consigna dirigida al aprendiz en pasos numerados (1., 2., 3. ...), 80-160 palabras, que aplica la técnica elegida al contexto del programa y del proyecto; indica si el trabajo es individual o en equipo y qué entrega.",
+  "apoyo": "Material de apoyo (lecturas, ejemplos, formatos o casos) en una línea."}}
+
+REGLAS:
+1. Usa SOLO el contexto del programa y del proyecto formativo; no nombres empresas que no aparezcan ahí y no inventes empresas.
+2. En 3.3 y 3.4 los pasos deben llevar a las evidencias de la planeación (no inventes otras evidencias).
+3. En 3.1 no se califica ni se exige dominio técnico; en 3.2 se reconocen saberes previos.
+4. Nada de software ni equipos como requisito: el ambiente es el de la planeación y los materiales son consumibles."""
+        prompt = self._aplicar_extra(prompt, instrucciones_extra)
+        res = self._parsear_json(self._llamar(prompt))
+        if not isinstance(res, dict):
+            res = {"descripcion": str(res), "apoyo": ""}
+        contexto_txt = " ".join(str(ctx.get(k, "")) for k in ("programa", "proyecto_formativo", "actividad_proyecto"))
+        ajenas = [e for e in EMPRESAS_EXTERNAS if e in str(res.get("descripcion", "")).lower()
+                  and e not in contexto_txt.lower()]
+        if ajenas:
+            try:
+                res2 = self._parsear_json(self._llamar(
+                    prompt + "\n\nTU RESPUESTA ANTERIOR mencionó " + ", ".join(ajenas) +
+                    ", que NO están en el programa ni en el proyecto. Reescríbela sin ellas. Devuelve el JSON."))
+                if isinstance(res2, dict) and res2.get("descripcion"):
+                    res = res2
+            except Exception:
+                pass
+        return {"descripcion": str(res.get("descripcion", "")).strip(),
+                "apoyo": str(res.get("apoyo", "")).strip()}
+
     # ---------- helpers internos ----------
     def _respetar_pausa(self):
         transcurrido = time.time() - self._ultima_llamada_ts
