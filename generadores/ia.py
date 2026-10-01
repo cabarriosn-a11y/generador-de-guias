@@ -416,6 +416,45 @@ class GeminiCliente:
         respuesta = self._llamar(prompt)
         return self._parsear_json(respuesta)
 
+    # ---------- Redistribución de saberes/criterios del diseño entre RAP (por índices) ----------
+    def distribuir_saberes(self, competencia: str, raps: list, listas: dict) -> list:
+        """La IA SOLO elige números de las listas oficiales: no puede escribir texto, así que
+        no puede inventar. Devuelve la lista cruda [{"rap": n, "conceptos": [..], ...}]."""
+        numerar = lambda xs: "\n".join(f"  [{i}] {x}" for i, x in enumerate(xs, 1)) or "  (sin datos)"
+        lista_raps = "\n".join(f"  RAP {j}. {r}" for j, r in enumerate(raps, 1))
+        prompt = f"""Eres experto en diseño curricular del SENA (Colombia). Debes REDISTRIBUIR entre los
+resultados de aprendizaje (RAP) de una competencia los saberes y criterios que YA trae el diseño
+curricular oficial. No redactas nada: solo asignas números.
+
+COMPETENCIA: {competencia}
+
+RESULTADOS DE APRENDIZAJE:
+{lista_raps}
+
+SABERES DE CONCEPTOS Y PRINCIPIOS (diseño curricular):
+{numerar(listas.get("conceptos", []))}
+
+SABERES DE PROCESO (diseño curricular):
+{numerar(listas.get("proceso", []))}
+
+CRITERIOS DE EVALUACIÓN (diseño curricular):
+{numerar(listas.get("criterios", []))}
+
+REGLAS:
+1. Asigna a cada RAP los ítems cuyo TEMA corresponde a ese RAP (p. ej. un RAP de inventarios
+   recibe los saberes y criterios de inventarios).
+2. TODO ítem de las tres listas debe quedar asignado al menos a un RAP. Un ítem puede ir a
+   varios RAP si realmente aplica a ambos, pero evita repetirlo sin necesidad.
+3. Cada RAP debe recibir al menos un criterio de evaluación y al menos un saber.
+4. Usa SOLO los números de las listas. Prohibido escribir texto o crear ítems.
+
+Responde ÚNICAMENTE con JSON válido, sin markdown:
+{{"asignacion": [{{"rap": 1, "conceptos": [1, 4], "proceso": [2], "criterios": [1]}}]}}"""
+        res = self._parsear_json(self._llamar(prompt))
+        if isinstance(res, dict):
+            res = res.get("asignacion", [])
+        return res if isinstance(res, list) else []
+
     # ---------- Planeación POR RAP (GFPI-F-134 según referencia oficial) ----------
     def generar_planeacion_rap(self, datos: dict, instrucciones_extra: str = "") -> dict:
         """Genera los campos de UNA fila de la planeación (un RAP).
@@ -429,7 +468,17 @@ class GeminiCliente:
         of_p = [x for x in datos.get("saberes_proceso_oficiales", []) if x]
         of_cr = [x for x in datos.get("criterios_evaluacion_oficiales", []) if x]
         hay_oficial = bool(of_c or of_p or of_cr)
-        if hay_oficial:
+        asignados = datos.get("saberes_asignados") or {}
+        if asignados:
+            bloque = ("\nSABERES Y CRITERIOS DEL DISEÑO CURRICULAR YA ASIGNADOS A ESTE RAP "
+                      "(base obligatoria de las actividades):\n"
+                      f"CONCEPTOS:\n{asignados.get('saberes_conceptos', '') or '(ninguno)'}\n"
+                      f"PROCESO:\n{asignados.get('saberes_proceso', '') or '(ninguno)'}\n"
+                      f"CRITERIOS:\n{asignados.get('criterios_evaluacion', '') or '(ninguno)'}\n")
+            regla = ("Los saberes y criterios ya están definidos (arriba): devuelve "
+                     "saberes_conceptos, saberes_proceso y criterios_evaluacion como listas VACÍAS y "
+                     "diseña las actividades y evidencias para que cubran esos saberes y criterios.")
+        elif hay_oficial:
             numerar = lambda xs: "\n".join(f"  [{i}] {x}" for i, x in enumerate(xs, 1)) or "  (sin datos)"
             bloque = ("\nLISTAS OFICIALES DEL DISEÑO CURRICULAR (SENA). Son de TODA la competencia:\n"
                       f"SABERES DE CONCEPTOS Y PRINCIPIOS:\n{numerar(of_c)}\n"
@@ -440,8 +489,9 @@ class GeminiCliente:
                      "(mismo texto, sin el número). Está PROHIBIDO redactar ítems nuevos.")
         else:
             bloque = ""
-            regla = ("Redacta 3-6 saberes de conceptos, 3-5 saberes de proceso y 2-4 criterios de "
-                     "evaluación (tercera persona, medibles) propios de este RAP.")
+            regla = ("NO hay diseño curricular cargado: está PROHIBIDO redactar saberes o criterios. "
+                     "Devuelve saberes_conceptos, saberes_proceso y criterios_evaluacion como listas "
+                     "VACÍAS y diseña solo las actividades.")
         raps = [r for r in datos.get("raps", []) if r]
         otros = [r for r in raps if r.strip() != datos.get("rap", "").strip()]
         prompt = self.prompts.get("planeacion_rap", PROMPT_PLANEACION_RAP_DEFAULT).format(
@@ -461,8 +511,12 @@ class GeminiCliente:
             if isinstance(items, str):
                 items = [x for x in re.split(r"\n+|•", items) if x.strip()]
             items = [re.sub(r"^\s*(\[\d+\]|\d+[.)-])\s*", "", str(x)).strip(" •-\t") for x in items]
-            if oficial:
+            if asignados:
+                items = []                              # ya vienen del diseño: no se tocan
+            elif oficial:
                 items = self._filtrar_verbatim(items, oficial)
+            else:
+                items = []                              # sin diseño: nunca se inventan
             res[campo] = "\n\n".join(items)
         # Actividades de aprendizaje (1..N por RAP). Acepta también el formato plano anterior.
         campos_aa = ("actividades_aprendizaje", "descripcion_evidencia", "estrategias_didacticas",

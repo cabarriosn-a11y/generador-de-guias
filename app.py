@@ -2144,6 +2144,10 @@ def _aplicar_pendientes_raps():
         for campo, _, _ in CAMPOS_RAP_UI:
             if res.get(campo):
                 st.session_state[f"pln_r_{i}_{j}_{campo}"] = str(res[campo]).strip()
+        for campo, lista in (res.get("_sel") or {}).items():
+            st.session_state[f"pln_r_{i}_{j}_sel_{campo}"] = list(lista)
+        if not res.get("actividades") and not any(res.get(c) for c, _, _ in CAMPOS_AA_UI):
+            continue                                   # solo saberes/criterios: no tocar las AA
         aas = res.get("actividades") or [res]
         st.session_state[f"pln_r_{i}_{j}_naa"] = max(1, min(MAX_AA, len(aas)))
         for a, aa in enumerate(aas[:MAX_AA]):
@@ -2157,15 +2161,75 @@ def _aplicar_pendientes_raps():
             st.session_state[f"pln_r_{i}_{j}_{a}_hi"] = int(hi)
 
 
-def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict, n_aa: int = 1) -> dict:
+def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict, n_aa: int = 1,
+               asignados: dict | None = None) -> dict:
     datos = {**contexto, "rap": rap, "raps": raps, "n_aa": n_aa,
              **{k: v for k, v in oficial.items() if not k.startswith("_")}}
+    if asignados and any(asignados.values()):
+        datos["saberes_asignados"] = asignados
     return cli_ia.generar_planeacion_rap(datos)
+
+
+def _listas_oficiales(oficial: dict) -> dict:
+    return {"conceptos": list(oficial.get("saberes_conceptos_oficiales") or []),
+            "proceso": list(oficial.get("saberes_proceso_oficiales") or []),
+            "criterios": list(oficial.get("criterios_evaluacion_oficiales") or [])}
+
+
+_CAMPO_LISTA = {"saberes_conceptos": "conceptos", "saberes_proceso": "proceso",
+                "criterios_evaluacion": "criterios"}
+
+
+def _asignados_actuales(i, j) -> dict:
+    """Saberes/criterios que el RAP tiene AHORA en pantalla (texto, uno por párrafo)."""
+    out = {}
+    for campo in _CAMPO_LISTA:
+        sel = st.session_state.get(f"pln_r_{i}_{j}_sel_{campo}")
+        out[campo] = "\n\n".join(sel) if isinstance(sel, list) else str(
+            st.session_state.get(f"pln_r_{i}_{j}_{campo}", "") or "")
+    return out
+
+
+def _pendiente_saberes(i, j, asign_rap: dict, listas: dict) -> dict:
+    """Resultado 'pendiente' con los saberes/criterios del diseño elegidos para el RAP (i, j)."""
+    from generadores.distribucion import a_texto
+    textos = a_texto(asign_rap, listas)
+    sel = {campo: [listas[k][x] for x in asign_rap.get(k, [])] for campo, k in _CAMPO_LISTA.items()}
+    return {"i": i, "j": j, "resultado": {**textos, "_sel": sel}}
+
+
+def _distribuir_competencia(cli_ia, filas, oficial, ctx_general):
+    """Reparte TODOS los saberes y criterios del diseño entre TODOS los RAP de la competencia
+    (todas sus fases). IA por índices si hay; si no, por palabras clave. Nunca inventa."""
+    from generadores.distribucion import consolidar, distribuir_por_palabras
+    listas = _listas_oficiales(oficial)
+    pos, raps = [], []
+    for i, fila in enumerate(filas):
+        for j, r in enumerate([x.strip() for x in fila.get("raps", "").splitlines() if x.strip()]):
+            pos.append((i, j)); raps.append(r)
+    if not raps or not any(listas.values()):
+        return 0, "sin diseño"
+    metodo = "IA"
+    try:
+        crudo = cli_ia.distribuir_saberes(filas[0].get("competencia", ""), raps, listas) if cli_ia else None
+        if not crudo:
+            raise ValueError("sin respuesta")
+    except Exception:
+        metodo = "palabras clave"
+        a = distribuir_por_palabras(raps, listas)
+        crudo = [{"rap": n + 1, **{k: [x + 1 for x in v] for k, v in a[n].items()}} for n in range(len(raps))]
+    asign, _ = consolidar(crudo, raps, listas)
+    for n, (i, j) in enumerate(pos):
+        st.session_state[f"pln_pend_rap_{i}_{j}"] = _pendiente_saberes(i, j, asign[n], listas)
+    return len(raps), metodo
 
 
 def _estado_rap(i, j, prev, naa):
     """Qué le falta a un RAP, leyendo lo que hay AHORA en pantalla (session_state)."""
     def val(clave, defecto=""):
+        m = re.match(r"^(pln_r_\d+_\d+_)(saberes_conceptos|saberes_proceso|criterios_evaluacion)$", clave)
+        if m and isinstance(st.session_state.get(f"{m.group(1)}sel_{m.group(2)}"), list):
+            return "x" if st.session_state[f"{m.group(1)}sel_{m.group(2)}"] else ""
         return str(st.session_state.get(clave, defecto) or "").strip()
     prev_aas = prev.get("actividades") or ([prev] if prev else [])
     faltan = []
@@ -2195,6 +2259,7 @@ def _estado_rap(i, j, prev, naa):
 def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, contexto,
                             modo_competencia=False):
     raps = [r.strip() for r in (raps_texto or "").splitlines() if r.strip()]
+    listas_dc = _listas_oficiales(_oficial_de_competencia(contexto.get("competencia", "")))
     if not raps:
         st.info("✍️ Escribe los Resultados de Aprendizaje (uno por línea) para detallarlos.")
         return []
@@ -2237,7 +2302,8 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
         barra = st.progress(0.0, text="La IA está planeando los RAP…")
         for n, j in enumerate(indices, 1):
             try:
-                res = _ia_un_rap(cli_ia, contexto, raps[j], raps, oficial, n_aa=_naa(j))
+                res = _ia_un_rap(cli_ia, contexto, raps[j], raps, oficial, n_aa=_naa(j),
+                                 asignados=_asignados_actuales(i, j))
                 st.session_state[f"pln_pend_rap_{i}_{j}"] = {"i": i, "j": j, "resultado": res}
                 ok += 1
             except Exception as e:  # un RAP que falla no tumba a los demás
@@ -2287,8 +2353,21 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
             valores = {}
             for col, (campo, etiqueta, alto) in zip((r1, r2, r3), CAMPOS_RAP_UI):
                 with col:
-                    k = _init_estado(f"pln_r_{i}_{j}_{campo}", str(prev.get(campo, "")))
-                    valores[campo] = st.text_area(etiqueta, height=alto, key=k)
+                    opciones = listas_dc.get(_CAMPO_LISTA[campo], [])
+                    if opciones:
+                        # 🔒 Del diseño curricular: solo se ELIGE de la lista oficial (no se escribe)
+                        previos_txt = [x.strip() for x in re.split(r"\n\s*\n|\n", str(prev.get(campo, ""))) if x.strip()]
+                        norm = lambda t: re.sub(r"\W+", "", t.upper())
+                        por_norm = {norm(o): o for o in opciones}
+                        defecto = [por_norm[norm(t)] for t in previos_txt if norm(t) in por_norm]
+                        sel = st.multiselect(f"🔒 {etiqueta} (del diseño)", opciones,
+                                             key=_init_estado(f"pln_r_{i}_{j}_sel_{campo}", defecto),
+                                             placeholder="Elija del diseño curricular…")
+                        sel = [o for o in opciones if o in sel]          # orden del diseño
+                        valores[campo] = "\n\n".join(sel)
+                    else:
+                        k = _init_estado(f"pln_r_{i}_{j}_{campo}", str(prev.get(campo, "")))
+                        valores[campo] = st.text_area(etiqueta, height=alto, key=k)
             actividades = []
             for a in range(int(naa)):
                 pa = prev_aas[a] if a < len(prev_aas) else {}
@@ -2485,6 +2564,27 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
     st.markdown("##### Pasos: ① revise los RAP de cada fase → ② complete con IA o a mano → "
                 "③ ajuste horas → ④ genere el Excel")
 
+    # ---- Saberes y criterios: SOLO del diseño curricular, repartidos entre los RAP ----
+    if oficial:
+        d1, d2 = st.columns([1.4, 1])
+        with d1:
+            repartir_dc = st.button("📚 Repartir saberes y criterios del diseño entre los RAP",
+                                    use_container_width=True,
+                                    help="Toma TODOS los saberes y criterios de la competencia en el "
+                                         "diseño curricular y los asigna a cada RAP según su tema. "
+                                         "No inventa nada: solo redistribuye. Luego puede ajustar.")
+        with d2:
+            st.caption("🔒 Los saberes y criterios solo se **eligen** de la lista del diseño; "
+                       "la IA no los redacta.")
+        if repartir_dc:
+            n, metodo = _distribuir_competencia(cli_ia, filas, oficial, ctx_general)
+            st.session_state["pln_c_msg"] = {"ok": 0, "errores": [], "oficial": True,
+                                             "reparto": f"{n} RAP · método: {metodo}"}
+            st.rerun()
+    else:
+        st.warning("⚠️ No hay diseño curricular cargado para esta competencia. Los saberes y criterios "
+                   "deben venir del diseño: cárguelo en «📚 Diseños Curriculares» (la IA no los inventa).")
+
     # ---- Acciones globales ----
     g1, g2, g3 = st.columns([1.2, 1, 1])
     with g1:
@@ -2518,6 +2618,17 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
         st.rerun()
 
     if completar:
+        # Paso 1: si falta algún saber/criterio y hay diseño, repartir primero (sin inventar)
+        if oficial:
+            falta_dc = False
+            for i, fila in enumerate(filas):
+                prev = fila.get("raps_detalle") or []
+                for j, _ in enumerate([r for r in fila.get("raps", "").splitlines() if r.strip()]):
+                    pr = prev[j] if j < len(prev) else {}
+                    f = _estado_rap(i, j, pr, len(pr.get("actividades") or [1]))
+                    falta_dc = falta_dc or ("saberes" in f or "criterios" in f)
+            if falta_dc:
+                _distribuir_competencia(cli_ia, filas, oficial, ctx_general)
         tareas = []
         for i, fila in enumerate(filas):
             raps_i = [r.strip() for r in fila.get("raps", "").splitlines() if r.strip()]
@@ -2525,10 +2636,13 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
             for j, rap in enumerate(raps_i):
                 naa = int(st.session_state.get(f"pln_r_{i}_{j}_naa", fila.get("aa_por_rap", 1) or 1))
                 faltan = _estado_rap(i, j, prev[j] if j < len(prev) else {}, naa)
-                if set(faltan) - {"horas"}:
+                if set(faltan) - {"horas", "saberes", "criterios"}:
                     tareas.append((i, j, rap, raps_i, naa, fila))
         if not tareas:
-            st.success("Todos los RAP ya tienen saberes, criterios, actividad y evidencia.")
+            st.session_state["pln_c_msg"] = {"ok": 0, "errores": [], "oficial": bool(oficial),
+                                             "reparto": "saberes y criterios del diseño repartidos"
+                                             if oficial else ""}
+            st.rerun()
         else:
             barra = st.progress(0.0, text=f"La IA está completando {len(tareas)} RAP…")
             errores = []
@@ -2537,7 +2651,13 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
                             "actividad_proyecto": fila.get("actividad_proyecto", ""),
                             "competencia": fila.get("competencia", "")}
                 try:
-                    res = _ia_un_rap(cli_ia, contexto, rap, raps_i, oficial, n_aa=naa)
+                    pend_dc = st.session_state.get(f"pln_pend_rap_{i}_{j}", {}).get("resultado", {})
+                    asignados = ({c: pend_dc.get(c, "") for c in _CAMPO_LISTA} if pend_dc
+                                 else _asignados_actuales(i, j))
+                    res = _ia_un_rap(cli_ia, contexto, rap, raps_i, oficial, n_aa=naa, asignados=asignados)
+                    if pend_dc:                         # conservar lo repartido del diseño
+                        res = {**res, **{c: pend_dc.get(c, "") for c in _CAMPO_LISTA},
+                               "_sel": pend_dc.get("_sel", {})}
                     st.session_state[f"pln_pend_rap_{i}_{j}"] = {"i": i, "j": j, "resultado": res}
                 except Exception as e:
                     errores.append(f"{fila.get('fase', '')} · RAP {j + 1}: {e}")
@@ -2547,6 +2667,9 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
             st.rerun()
     msg = st.session_state.get("pln_c_msg")
     if msg:
+        if msg.get("reparto"):
+            st.success(f"📚 Saberes y criterios del diseño repartidos ({msg['reparto']}). "
+                       "Revíselos en cada RAP: puede quitar o agregar ítems de la lista oficial.")
         if msg["ok"]:
             st.success(f"✅ La IA completó {msg['ok']} RAP. "
                        + ("🔒 Saberes y criterios copiados textualmente del diseño curricular."
