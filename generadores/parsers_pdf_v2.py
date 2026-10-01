@@ -91,8 +91,29 @@ def renglones(ruta):
                 cuenta[t] += 1
     npag = n + 1
     repetidas = {t for t, c in cuenta.items() if c >= npag * 0.6}
-    return [l for l in lineas if l["t"] not in repetidas
-            and not re.search(r"\d{2}/\d{2}/\d{2}\s+\d{1,2}:\d{2}\s+Página \d+ de \d+", l["t"])]
+    pie = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}(:\d{2})?\s*(AM|PM|a\. ?m\.|p\. ?m\.)?\s*"
+                     r"Página\s+\d+\s+de\s+\d+", re.I)
+    salida = []
+    for l in lineas:
+        if l["t"] in repetidas:
+            continue
+        t = pie.sub(" ", l["t"]).strip()            # pie de página (también pegado a otro texto)
+        if not t:
+            continue
+        # Formato antiguo de SOFIA: cada ítem va precedido de un tabulador que el PDF exporta
+        # como "(cid:9)". Es la marca más fiable de "ítem nuevo"; si hay varias en el renglón,
+        # el renglón trae varios ítems pegados.
+        trozos = re.split(r"\s*\(cid:\d+\)\s*", t)
+        if len(trozos) > 1:
+            if trozos[0].strip():
+                salida.append({**l, "t": trozos[0].strip()})
+            for k, tr in enumerate(trozos[1:]):
+                if tr.strip():
+                    salida.append({**l, "t": tr.strip(), "vineta": True,
+                                   "x1": l["x1"] if k == len(trozos) - 2 else 0})
+            continue
+        salida.append({**l, "t": t})
+    return salida
 
 NO_VERBO = {"EMPRESA", "NORMATIVA", "CARGA", "POLÍTICA", "POLITICA", "MERCANCÍA", "NORMA", "NORMAS",
             "CLIENTE", "CLIENTES", "ENTREGA", "ENERGÍA", "MATERIA", "PRODUCTIVA", "TÉCNICA", "TECNICA",
@@ -120,11 +141,19 @@ def unir_items(lineas, vocab, tipo):
       SOFIA corta por número de caracteres, no por geometría.
     - Saberes del saber (sin verbo): continúa si la primera palabra no cabía en el renglón previo."""
     items = []
+    usa_vinetas = any(l.get("vineta") for l in lineas)
     for l in lineas:
         t = l["t"]
         if not t:
             continue
         primera = t.split()[0]
+        if usa_vinetas:                     # la viñeta manda: con viñeta = nuevo, sin viñeta = cola
+            if l.get("vineta") or not items:
+                items.append({"t": t, "x1": l["x1"]})
+            else:
+                items[-1]["t"] += " " + t
+                items[-1]["x1"] = l["x1"]
+            continue
         if items:
             prev = items[-1]
             termino = prev["x1"] < 470
@@ -280,6 +309,18 @@ def parsear_diseno(ruta):
     return _finalizar(info, comps)
 
 
+def _partir_temas(items):
+    """Un saber del diseño suele ser un párrafo con varios temas separados por punto
+    ("POLÍTICAS... DE LA ORGANIZACIÓN. IDENTIDAD CORPORATIVA. NORMATIVIDAD: ..."). Se parte
+    en temas para poder repartirlos entre RAP; el texto de cada tema queda tal cual."""
+    out = []
+    for it in items:
+        partes = re.split(r"(?<=[A-ZÁÉÍÓÚÑ)\]]\.)\s+(?=[A-ZÁÉÍÓÚÑ\"(¿])", it)
+        partes = [x.strip() for x in partes if x.strip(" .")]
+        out += partes if len(partes) > 1 else [it]
+    return [x for i, x in enumerate(out) if x not in out[:i]]       # sin duplicados exactos
+
+
 def _finalizar(info, comps):
     # Vocabulario de verbos de inicio aprendido del propio documento (renglones que
     # inequívocamente empiezan ítem: el renglón anterior terminó lejos del borde)
@@ -295,7 +336,7 @@ def _finalizar(info, comps):
         s = c.pop("_secc")
         c["raps"] = unir_items(s.get("raps", []), vocab, "rap")
         c["conocimientos_proceso"] = unir_items(s.get("proceso", []), vocab, "proceso")
-        c["conocimientos_saber"] = unir_items(s.get("saber", []), set(), "saber")
+        c["conocimientos_saber"] = _partir_temas(unir_items(s.get("saber", []), set(), "saber"))
         c["criterios_evaluacion"] = unir_items(s.get("criterios", []), vocab, "criterio")
     return {**info, "competencias": comps}
 
