@@ -1772,263 +1772,268 @@ def seccion_planeacion_pedagogica():
     _aplicar_pendientes_raps()
     cli_ia = obtener_cliente_ia()
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("➕ Agregar fila", use_container_width=True):
-            st.session_state.planeacion_filas.append(_fila_planeacion_vacia())
-            st.rerun()
-    with col_b:
-        if st.button("🗑️ Eliminar última fila", use_container_width=True,
-                     disabled=len(st.session_state.planeacion_filas) <= 1):
-            st.session_state.planeacion_filas.pop()
-            st.rerun()
+    if st.session_state.get("planeacion_modo") == "competencia":
+        filas_editadas = _vista_competencia(st.session_state.planeacion_filas, cli_ia, cfg,
+                                            {"programa": programa, "proyecto_formativo": proyecto})
+    else:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("➕ Agregar fila", use_container_width=True):
+                st.session_state.planeacion_filas.append(_fila_planeacion_vacia())
+                st.rerun()
+        with col_b:
+            if st.button("🗑️ Eliminar última fila", use_container_width=True,
+                         disabled=len(st.session_state.planeacion_filas) <= 1):
+                st.session_state.planeacion_filas.pop()
+                st.rerun()
 
-    filas_editadas = []
-    for i, fila in enumerate(st.session_state.planeacion_filas):
-        with st.expander(f"📋 Fila {i+1} — {fila.get('competencia', 'Nueva competencia')[:60]}",
-                         expanded=(i == 0)):
-            c1, c2 = st.columns(2)
-            with c1:
-                fase = st.text_input(
-                    "Fase",
-                    value=str(fila.get("fase", "")),
-                    key=f"pln_fase_{i}",
-                    help="Escribe el nombre exacto de la fase como aparece en tu proyecto formativo. "
-                         "Ej: ANÁLISIS, PLANEACIÓN, PLANEAR, DISEÑO, EJECUCIÓN, EVALUACIÓN, etc."
-                )
-                actividad_proy = st.text_area("Actividad del Proyecto Formativo",
-                    value=fila.get("actividad_proyecto", ""), height=80, key=f"pln_act_{i}")
-                competencia = st.text_area("Competencia (código + nombre)",
-                    value=fila.get("competencia", ""), height=80, key=f"pln_comp_{i}")
-                raps_texto = st.text_area("Resultados de Aprendizaje (uno por línea)",
-                    value=fila.get("raps", ""), height=120, key=f"pln_raps_{i}")
-            with c2:
-                horas_dir = st.number_input("Horas trabajo directo", 0, 200,
-                    value=int(fila.get("horas_directas", 48)), key=f"pln_hd_{i}")
-                horas_ind = st.number_input("Horas trabajo independiente", 0, 200,
-                    value=int(fila.get("horas_independientes", 48)), key=f"pln_hi_{i}")
+        filas_editadas = []
+        for i, fila in enumerate(st.session_state.planeacion_filas):
+            with st.expander(f"📋 Fila {i+1} — {fila.get('competencia', 'Nueva competencia')[:60]}",
+                             expanded=(i == 0)):
+                c1, c2 = st.columns(2)
+                with c1:
+                    fase = st.text_input(
+                        "Fase",
+                        value=str(fila.get("fase", "")),
+                        key=f"pln_fase_{i}",
+                        help="Escribe el nombre exacto de la fase como aparece en tu proyecto formativo. "
+                             "Ej: ANÁLISIS, PLANEACIÓN, PLANEAR, DISEÑO, EJECUCIÓN, EVALUACIÓN, etc."
+                    )
+                    actividad_proy = st.text_area("Actividad del Proyecto Formativo",
+                        value=fila.get("actividad_proyecto", ""), height=80, key=f"pln_act_{i}")
+                    competencia = st.text_area("Competencia (código + nombre)",
+                        value=fila.get("competencia", ""), height=80, key=f"pln_comp_{i}")
+                    raps_texto = st.text_area("Resultados de Aprendizaje (uno por línea)",
+                        value=fila.get("raps", ""), height=120, key=f"pln_raps_{i}")
+                with c2:
+                    horas_dir = st.number_input("Horas trabajo directo", 0, 200,
+                        value=int(fila.get("horas_directas", 48)), key=f"pln_hd_{i}")
+                    horas_ind = st.number_input("Horas trabajo independiente", 0, 200,
+                        value=int(fila.get("horas_independientes", 48)), key=f"pln_hi_{i}")
 
-            modo_rap = st.toggle(
-                "📑 Detallar por RAP (formato de la planeación oficial de referencia)",
-                value=bool(fila.get("modo_rap", True)), key=f"pln_modo_rap_{i}",
-                help="Cada RAP lleva sus propios saberes, criterios, actividad, horas, evidencia y "
-                     "estrategias (una fila del Excel por RAP). Desactívalo para usar una sola "
-                     "descripción por competencia (celdas combinadas).")
-            if cli_ia and not modo_rap:
-                col_btn_ia, col_dbg = st.columns([2, 1])
-                with col_btn_ia:
-                    btn_ia = st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
-                                        key=f"pln_ia_{i}", use_container_width=True)
-                with col_dbg:
-                    ver_debug = st.checkbox("🔍 Ver debug", key=f"pln_debug_{i}", value=False)
+                modo_rap = st.toggle(
+                    "📑 Detallar por RAP (formato de la planeación oficial de referencia)",
+                    value=bool(fila.get("modo_rap", True)), key=f"pln_modo_rap_{i}",
+                    help="Cada RAP lleva sus propios saberes, criterios, actividad, horas, evidencia y "
+                         "estrategias (una fila del Excel por RAP). Desactívalo para usar una sola "
+                         "descripción por competencia (celdas combinadas).")
+                if cli_ia and not modo_rap:
+                    col_btn_ia, col_dbg = st.columns([2, 1])
+                    with col_btn_ia:
+                        btn_ia = st.button(f"🤖 Generar campos técnicos con IA (Fila {i+1})",
+                                            key=f"pln_ia_{i}", use_container_width=True)
+                    with col_dbg:
+                        ver_debug = st.checkbox("🔍 Ver debug", key=f"pln_debug_{i}", value=False)
 
-                if btn_ia:
-                    with st.spinner("La IA está diseñando los campos técnicos... (~15 segundos)"):
-                        try:
-                            # 1) Buscar en el Diseño Curricular oficial por código de competencia
-                            codigo_comp = ""
-                            m_cod = re.search(r"(\d{6,9})", competencia)
-                            if m_cod:
-                                codigo_comp = m_cod.group(1)
-                            oficial = buscar_competencia_por_codigo(codigo_comp, DISENOS_FILE) if codigo_comp else {}
+                    if btn_ia:
+                        with st.spinner("La IA está diseñando los campos técnicos... (~15 segundos)"):
+                            try:
+                                # 1) Buscar en el Diseño Curricular oficial por código de competencia
+                                codigo_comp = ""
+                                m_cod = re.search(r"(\d{6,9})", competencia)
+                                if m_cod:
+                                    codigo_comp = m_cod.group(1)
+                                oficial = buscar_competencia_por_codigo(codigo_comp, DISENOS_FILE) if codigo_comp else {}
 
-                            # 2) Buscar guías previas para alineación
-                            guias_relacionadas = _buscar_guias_de_competencia(competencia)
+                                # 2) Buscar guías previas para alineación
+                                guias_relacionadas = _buscar_guias_de_competencia(competencia)
 
-                            # 3) Preparar contexto oficial (si hay coincidencia) para pasar a la IA
-                            datos_oficiales = {}
-                            if oficial:
-                                comp_of = oficial["competencia"]
-                                datos_oficiales = {
-                                    "saberes_conceptos_oficiales": comp_of.get("conocimientos_saber", []),
-                                    "saberes_proceso_oficiales": comp_of.get("conocimientos_proceso", []),
-                                    "criterios_evaluacion_oficiales": comp_of.get("criterios_evaluacion", []),
-                                    "duracion_oficial": comp_of.get("duracion_horas"),
-                                    "programa_oficial": oficial.get("programa", ""),
+                                # 3) Preparar contexto oficial (si hay coincidencia) para pasar a la IA
+                                datos_oficiales = {}
+                                if oficial:
+                                    comp_of = oficial["competencia"]
+                                    datos_oficiales = {
+                                        "saberes_conceptos_oficiales": comp_of.get("conocimientos_saber", []),
+                                        "saberes_proceso_oficiales": comp_of.get("conocimientos_proceso", []),
+                                        "criterios_evaluacion_oficiales": comp_of.get("criterios_evaluacion", []),
+                                        "duracion_oficial": comp_of.get("duracion_horas"),
+                                        "programa_oficial": oficial.get("programa", ""),
+                                    }
+
+                                datos_ia = {
+                                    "programa": programa, "fase": fase,
+                                    "proyecto_formativo": proyecto,
+                                    "actividad_proyecto": actividad_proy,
+                                    "competencia": competencia,
+                                    "raps": [r.strip() for r in raps_texto.splitlines() if r.strip()],
+                                    "guias_relacionadas": guias_relacionadas,
+                                    **datos_oficiales,
+                                }
+                                resultado = cli_ia.generar_planeacion(datos_ia)
+
+                                # 4) Si hay diseño oficial, SOBREESCRIBIR los 3 campos oficiales
+                                # (no importa lo que devolvió la IA, mandan los oficiales)
+                                if oficial and isinstance(resultado, dict):
+                                    comp_of = oficial["competencia"]
+                                    if comp_of.get("conocimientos_saber"):
+                                        resultado["saberes_conceptos"] = "\n".join(
+                                            f"• {s}" for s in comp_of["conocimientos_saber"]
+                                        )
+                                    if comp_of.get("conocimientos_proceso"):
+                                        resultado["saberes_proceso"] = "\n".join(
+                                            f"• {s}" for s in comp_of["conocimientos_proceso"]
+                                        )
+                                    if comp_of.get("criterios_evaluacion"):
+                                        resultado["criterios_evaluacion"] = "\n".join(
+                                            f"• {c}" for c in comp_of["criterios_evaluacion"]
+                                        )
+
+                                # Contar campos aplicables
+                                campos_ia = ("saberes_conceptos", "saberes_proceso",
+                                             "criterios_evaluacion", "actividades_aprendizaje",
+                                             "descripcion_evidencia", "estrategias_didacticas",
+                                             "ambiente", "materiales", "horas_directas",
+                                             "horas_independientes")
+                                aplicados, no_aplicados = [], []
+                                if isinstance(resultado, dict):
+                                    for k in campos_ia:
+                                        v = resultado.get(k)
+                                        if v not in (None, "", 0):
+                                            aplicados.append(k)
+                                        else:
+                                            no_aplicados.append(k)
+
+                                # Guardar como PENDIENTE — se aplicará al inicio del próximo rerun
+                                st.session_state[f"pln_pendiente_ia_{i}"] = {
+                                    "resultado": resultado,
+                                    "guias_usadas": len(guias_relacionadas),
+                                    "diseno_oficial_usado": bool(oficial),
+                                    "programa_oficial": oficial.get("programa", "") if oficial else "",
+                                    "competencia": competencia[:80],
+                                    "aplicados": aplicados,
+                                    "no_aplicados": no_aplicados,
+                                }
+                                st.session_state[f"pln_ultimo_resultado_{i}"] = dict(
+                                    st.session_state[f"pln_pendiente_ia_{i}"])
+                                st.rerun()
+                            except Exception as e:
+                                import traceback
+                                st.error(f"❌ Error al llamar la IA: {e}")
+                                st.session_state[f"pln_ultimo_resultado_{i}"] = {
+                                    "error": str(e),
+                                    "traceback": traceback.format_exc(),
                                 }
 
-                            datos_ia = {
-                                "programa": programa, "fase": fase,
-                                "proyecto_formativo": proyecto,
-                                "actividad_proyecto": actividad_proy,
-                                "competencia": competencia,
-                                "raps": [r.strip() for r in raps_texto.splitlines() if r.strip()],
-                                "guias_relacionadas": guias_relacionadas,
-                                **datos_oficiales,
-                            }
-                            resultado = cli_ia.generar_planeacion(datos_ia)
+                    # Mostrar mensaje del último resultado (post-rerun)
+                    if f"pln_ultimo_resultado_{i}" in st.session_state:
+                        ultimo = st.session_state[f"pln_ultimo_resultado_{i}"]
+                        if "error" in ultimo:
+                            with st.expander("❌ Error de la IA - Ver detalles"):
+                                st.error(ultimo["error"])
+                                st.code(ultimo.get("traceback", ""), language="python")
+                        else:
+                            aplicados = ultimo.get("aplicados", [])
+                            no_aplicados = ultimo.get("no_aplicados", [])
+                            if aplicados:
+                                msg = f"✅ IA aplicó {len(aplicados)} campo(s)"
+                                if ultimo.get("guias_usadas", 0) > 0:
+                                    msg += f" · {ultimo['guias_usadas']} guía(s) previa(s) como contexto"
+                                st.success(msg)
+                            # Aviso especial: diseño curricular oficial usado
+                            if ultimo.get("diseno_oficial_usado"):
+                                prog_of = ultimo.get("programa_oficial", "")
+                                st.info(f"🔒 **Saberes y criterios oficiales aplicados** desde el Diseño Curricular"
+                                        + (f" de _{prog_of[:60]}_" if prog_of else "")
+                                        + ". Estos campos aparecen en gris; puedes editarlos si necesitas ajustar algo.")
+                            if no_aplicados:
+                                st.warning(f"⚠️ La IA no devolvió estos campos (o venían vacíos): "
+                                           f"{', '.join(no_aplicados)}")
 
-                            # 4) Si hay diseño oficial, SOBREESCRIBIR los 3 campos oficiales
-                            # (no importa lo que devolvió la IA, mandan los oficiales)
-                            if oficial and isinstance(resultado, dict):
-                                comp_of = oficial["competencia"]
-                                if comp_of.get("conocimientos_saber"):
-                                    resultado["saberes_conceptos"] = "\n".join(
-                                        f"• {s}" for s in comp_of["conocimientos_saber"]
-                                    )
-                                if comp_of.get("conocimientos_proceso"):
-                                    resultado["saberes_proceso"] = "\n".join(
-                                        f"• {s}" for s in comp_of["conocimientos_proceso"]
-                                    )
-                                if comp_of.get("criterios_evaluacion"):
-                                    resultado["criterios_evaluacion"] = "\n".join(
-                                        f"• {c}" for c in comp_of["criterios_evaluacion"]
-                                    )
-
-                            # Contar campos aplicables
-                            campos_ia = ("saberes_conceptos", "saberes_proceso",
-                                         "criterios_evaluacion", "actividades_aprendizaje",
-                                         "descripcion_evidencia", "estrategias_didacticas",
-                                         "ambiente", "materiales", "horas_directas",
-                                         "horas_independientes")
-                            aplicados, no_aplicados = [], []
-                            if isinstance(resultado, dict):
-                                for k in campos_ia:
-                                    v = resultado.get(k)
-                                    if v not in (None, "", 0):
-                                        aplicados.append(k)
+                        if ver_debug:
+                            with st.expander("🔍 Respuesta cruda de la IA (debug)", expanded=True):
+                                resultado = ultimo.get("resultado")
+                                if resultado is not None:
+                                    if isinstance(resultado, dict):
+                                        st.json(resultado)
                                     else:
-                                        no_aplicados.append(k)
+                                        st.code(str(resultado)[:2000])
+                                        st.warning(f"Tipo recibido: {type(resultado).__name__} (esperaba dict)")
+                                st.markdown(f"**Aplicados:** {ultimo.get('aplicados', [])}")
+                                st.markdown(f"**No aplicados:** {ultimo.get('no_aplicados', [])}")
 
-                            # Guardar como PENDIENTE — se aplicará al inicio del próximo rerun
-                            st.session_state[f"pln_pendiente_ia_{i}"] = {
-                                "resultado": resultado,
-                                "guias_usadas": len(guias_relacionadas),
-                                "diseno_oficial_usado": bool(oficial),
-                                "programa_oficial": oficial.get("programa", "") if oficial else "",
-                                "competencia": competencia[:80],
-                                "aplicados": aplicados,
-                                "no_aplicados": no_aplicados,
-                            }
-                            st.session_state[f"pln_ultimo_resultado_{i}"] = dict(
-                                st.session_state[f"pln_pendiente_ia_{i}"])
-                            st.rerun()
-                        except Exception as e:
-                            import traceback
-                            st.error(f"❌ Error al llamar la IA: {e}")
-                            st.session_state[f"pln_ultimo_resultado_{i}"] = {
-                                "error": str(e),
-                                "traceback": traceback.format_exc(),
-                            }
+                if not modo_rap:
+                    # Detectar si esta fila tiene saberes/criterios del diseño oficial
+                    # (los campos vienen con formato "• item1\n• item2..." si son oficiales)
+                    _es_oficial = (
+                        fila.get("saberes_conceptos", "").strip().startswith("•")
+                        or fila.get("saberes_proceso", "").strip().startswith("•")
+                        or fila.get("criterios_evaluacion", "").strip().startswith("•")
+                    )
+                    _sufijo_oficial = " 🔒 (del Diseño Curricular oficial)" if _es_oficial else ""
 
-                # Mostrar mensaje del último resultado (post-rerun)
-                if f"pln_ultimo_resultado_{i}" in st.session_state:
-                    ultimo = st.session_state[f"pln_ultimo_resultado_{i}"]
-                    if "error" in ultimo:
-                        with st.expander("❌ Error de la IA - Ver detalles"):
-                            st.error(ultimo["error"])
-                            st.code(ultimo.get("traceback", ""), language="python")
-                    else:
-                        aplicados = ultimo.get("aplicados", [])
-                        no_aplicados = ultimo.get("no_aplicados", [])
-                        if aplicados:
-                            msg = f"✅ IA aplicó {len(aplicados)} campo(s)"
-                            if ultimo.get("guias_usadas", 0) > 0:
-                                msg += f" · {ultimo['guias_usadas']} guía(s) previa(s) como contexto"
-                            st.success(msg)
-                        # Aviso especial: diseño curricular oficial usado
-                        if ultimo.get("diseno_oficial_usado"):
-                            prog_of = ultimo.get("programa_oficial", "")
-                            st.info(f"🔒 **Saberes y criterios oficiales aplicados** desde el Diseño Curricular"
-                                    + (f" de _{prog_of[:60]}_" if prog_of else "")
-                                    + ". Estos campos aparecen en gris; puedes editarlos si necesitas ajustar algo.")
-                        if no_aplicados:
-                            st.warning(f"⚠️ La IA no devolvió estos campos (o venían vacíos): "
-                                       f"{', '.join(no_aplicados)}")
+                    c3, c4 = st.columns(2)
+                    with c3:
+                        saberes_c = st.text_area(
+                            f"Saberes de Conceptos y Principios{_sufijo_oficial}",
+                            value=fila.get("saberes_conceptos", ""), height=180 if _es_oficial else 100,
+                            key=f"pln_saberes_conceptos_{i}",
+                            help="🔒 Estos datos vienen del Diseño Curricular oficial SENA. "
+                                 "Puedes editarlos si necesitas ajustar algo." if _es_oficial else None)
+                        saberes_p = st.text_area(
+                            f"Saberes de Proceso{_sufijo_oficial}",
+                            value=fila.get("saberes_proceso", ""), height=180 if _es_oficial else 100,
+                            key=f"pln_saberes_proceso_{i}",
+                            help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
+                        criterios = st.text_area(
+                            f"Criterios de Evaluación{_sufijo_oficial}",
+                            value=fila.get("criterios_evaluacion", ""), height=220 if _es_oficial else 140,
+                            key=f"pln_criterios_evaluacion_{i}",
+                            help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
+                        actividades_apr = st.text_area("Actividades de Aprendizaje",
+                            value=fila.get("actividades_aprendizaje", ""), height=100,
+                            key=f"pln_actividades_aprendizaje_{i}")
+                    with c4:
+                        evidencia = st.text_area("Descripción de la Evidencia",
+                            value=fila.get("descripcion_evidencia", ""), height=100,
+                            key=f"pln_descripcion_evidencia_{i}")
+                        estrategias = st.text_area("Estrategias Didácticas Activas",
+                            value=fila.get("estrategias_didacticas", ""), height=100,
+                            key=f"pln_estrategias_didacticas_{i}")
+                        ambiente = st.text_input("Ambiente",
+                            value=fila.get("ambiente", ""), key=f"pln_ambiente_{i}")
+                        materiales = st.text_area("Materiales de Formación",
+                            value=fila.get("materiales", ""), height=80, key=f"pln_materiales_{i}")
+                        instructores = st.text_input("Instructores Responsables",
+                            value=fila.get("instructores",
+                                           cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
+                            key=f"pln_ins_{i}")
+                        observaciones = st.text_input("Observaciones",
+                            value=fila.get("observaciones", ""), key=f"pln_obs_{i}")
 
-                    if ver_debug:
-                        with st.expander("🔍 Respuesta cruda de la IA (debug)", expanded=True):
-                            resultado = ultimo.get("resultado")
-                            if resultado is not None:
-                                if isinstance(resultado, dict):
-                                    st.json(resultado)
-                                else:
-                                    st.code(str(resultado)[:2000])
-                                    st.warning(f"Tipo recibido: {type(resultado).__name__} (esperaba dict)")
-                            st.markdown(f"**Aplicados:** {ultimo.get('aplicados', [])}")
-                            st.markdown(f"**No aplicados:** {ultimo.get('no_aplicados', [])}")
+                    raps_detalle = []
+                else:
+                    saberes_c = saberes_p = criterios = actividades_apr = evidencia = estrategias = ""
+                    raps_detalle = _editor_raps_planeacion(
+                        i, fila, raps_texto, horas_dir, horas_ind, cli_ia,
+                        contexto={"programa": programa, "fase": fase, "proyecto_formativo": proyecto,
+                                  "actividad_proyecto": actividad_proy, "competencia": competencia})
+                    st.markdown("**Valores comunes a todos los RAP** (un RAP los hereda si los deja vacíos)")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        ambiente = st.text_input("Ambiente de formación", value=fila.get("ambiente", ""),
+                                                 key=f"pln_ambiente_{i}")
+                        materiales = st.text_area("Materiales de formación", value=fila.get("materiales", ""),
+                                                  height=70, key=f"pln_materiales_{i}")
+                    with cc2:
+                        instructores = st.text_input("Instructores responsables",
+                            value=fila.get("instructores", cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
+                            key=f"pln_ins_{i}")
+                        observaciones = st.text_input("Observaciones", value=fila.get("observaciones", ""),
+                                                      key=f"pln_obs_{i}")
 
-            if not modo_rap:
-                # Detectar si esta fila tiene saberes/criterios del diseño oficial
-                # (los campos vienen con formato "• item1\n• item2..." si son oficiales)
-                _es_oficial = (
-                    fila.get("saberes_conceptos", "").strip().startswith("•")
-                    or fila.get("saberes_proceso", "").strip().startswith("•")
-                    or fila.get("criterios_evaluacion", "").strip().startswith("•")
-                )
-                _sufijo_oficial = " 🔒 (del Diseño Curricular oficial)" if _es_oficial else ""
+                filas_editadas.append({
+                    "fase": fase, "actividad_proyecto": actividad_proy,
+                    "competencia": competencia, "raps": raps_texto, "modo_rap": modo_rap,
+                    "raps_detalle": raps_detalle,
+                    "saberes_conceptos": saberes_c, "saberes_proceso": saberes_p,
+                    "criterios_evaluacion": criterios, "actividades_aprendizaje": actividades_apr,
+                    "horas_directas": horas_dir, "horas_independientes": horas_ind,
+                    "descripcion_evidencia": evidencia, "estrategias_didacticas": estrategias,
+                    "ambiente": ambiente, "materiales": materiales,
+                    "instructores": instructores, "observaciones": observaciones,
+                })
 
-                c3, c4 = st.columns(2)
-                with c3:
-                    saberes_c = st.text_area(
-                        f"Saberes de Conceptos y Principios{_sufijo_oficial}",
-                        value=fila.get("saberes_conceptos", ""), height=180 if _es_oficial else 100,
-                        key=f"pln_saberes_conceptos_{i}",
-                        help="🔒 Estos datos vienen del Diseño Curricular oficial SENA. "
-                             "Puedes editarlos si necesitas ajustar algo." if _es_oficial else None)
-                    saberes_p = st.text_area(
-                        f"Saberes de Proceso{_sufijo_oficial}",
-                        value=fila.get("saberes_proceso", ""), height=180 if _es_oficial else 100,
-                        key=f"pln_saberes_proceso_{i}",
-                        help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
-                    criterios = st.text_area(
-                        f"Criterios de Evaluación{_sufijo_oficial}",
-                        value=fila.get("criterios_evaluacion", ""), height=220 if _es_oficial else 140,
-                        key=f"pln_criterios_evaluacion_{i}",
-                        help="🔒 Del Diseño Curricular oficial." if _es_oficial else None)
-                    actividades_apr = st.text_area("Actividades de Aprendizaje",
-                        value=fila.get("actividades_aprendizaje", ""), height=100,
-                        key=f"pln_actividades_aprendizaje_{i}")
-                with c4:
-                    evidencia = st.text_area("Descripción de la Evidencia",
-                        value=fila.get("descripcion_evidencia", ""), height=100,
-                        key=f"pln_descripcion_evidencia_{i}")
-                    estrategias = st.text_area("Estrategias Didácticas Activas",
-                        value=fila.get("estrategias_didacticas", ""), height=100,
-                        key=f"pln_estrategias_didacticas_{i}")
-                    ambiente = st.text_input("Ambiente",
-                        value=fila.get("ambiente", ""), key=f"pln_ambiente_{i}")
-                    materiales = st.text_area("Materiales de Formación",
-                        value=fila.get("materiales", ""), height=80, key=f"pln_materiales_{i}")
-                    instructores = st.text_input("Instructores Responsables",
-                        value=fila.get("instructores",
-                                       cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
-                        key=f"pln_ins_{i}")
-                    observaciones = st.text_input("Observaciones",
-                        value=fila.get("observaciones", ""), key=f"pln_obs_{i}")
-
-                raps_detalle = []
-            else:
-                saberes_c = saberes_p = criterios = actividades_apr = evidencia = estrategias = ""
-                raps_detalle = _editor_raps_planeacion(
-                    i, fila, raps_texto, horas_dir, horas_ind, cli_ia,
-                    contexto={"programa": programa, "fase": fase, "proyecto_formativo": proyecto,
-                              "actividad_proyecto": actividad_proy, "competencia": competencia})
-                st.markdown("**Valores comunes a todos los RAP** (un RAP los hereda si los deja vacíos)")
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    ambiente = st.text_input("Ambiente de formación", value=fila.get("ambiente", ""),
-                                             key=f"pln_ambiente_{i}")
-                    materiales = st.text_area("Materiales de formación", value=fila.get("materiales", ""),
-                                              height=70, key=f"pln_materiales_{i}")
-                with cc2:
-                    instructores = st.text_input("Instructores responsables",
-                        value=fila.get("instructores", cfg.get("smtp_nombre") or cfg.get("autor_default", "")),
-                        key=f"pln_ins_{i}")
-                    observaciones = st.text_input("Observaciones", value=fila.get("observaciones", ""),
-                                                  key=f"pln_obs_{i}")
-
-            filas_editadas.append({
-                "fase": fase, "actividad_proyecto": actividad_proy,
-                "competencia": competencia, "raps": raps_texto, "modo_rap": modo_rap,
-                "raps_detalle": raps_detalle,
-                "saberes_conceptos": saberes_c, "saberes_proceso": saberes_p,
-                "criterios_evaluacion": criterios, "actividades_aprendizaje": actividades_apr,
-                "horas_directas": horas_dir, "horas_independientes": horas_ind,
-                "descripcion_evidencia": evidencia, "estrategias_didacticas": estrategias,
-                "ambiente": ambiente, "materiales": materiales,
-                "instructores": instructores, "observaciones": observaciones,
-            })
 
     st.session_state.planeacion_filas = filas_editadas
     st.markdown("---")
@@ -2158,7 +2163,37 @@ def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict, n_aa
     return cli_ia.generar_planeacion_rap(datos)
 
 
-def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, contexto):
+def _estado_rap(i, j, prev, naa):
+    """Qué le falta a un RAP, leyendo lo que hay AHORA en pantalla (session_state)."""
+    def val(clave, defecto=""):
+        return str(st.session_state.get(clave, defecto) or "").strip()
+    prev_aas = prev.get("actividades") or ([prev] if prev else [])
+    faltan = []
+    if not (val(f"pln_r_{i}_{j}_saberes_conceptos", prev.get("saberes_conceptos", ""))
+            or val(f"pln_r_{i}_{j}_saberes_proceso", prev.get("saberes_proceso", ""))):
+        faltan.append("saberes")
+    if not val(f"pln_r_{i}_{j}_criterios_evaluacion", prev.get("criterios_evaluacion", "")):
+        faltan.append("criterios")
+    for a in range(int(naa)):
+        pa = prev_aas[a] if a < len(prev_aas) else {}
+        if not val(f"pln_r_{i}_{j}_{a}_actividades_aprendizaje", pa.get("actividades_aprendizaje", "")):
+            faltan.append("actividad" + (f" {a + 1}" if naa > 1 else "")); break
+    for a in range(int(naa)):
+        pa = prev_aas[a] if a < len(prev_aas) else {}
+        if not val(f"pln_r_{i}_{j}_{a}_descripcion_evidencia", pa.get("descripcion_evidencia", "")):
+            faltan.append("evidencia"); break
+    horas = sum(int(st.session_state.get(f"pln_r_{i}_{j}_{a}_hd",
+                                         (prev_aas[a] if a < len(prev_aas) else {}).get("horas_directas") or 0) or 0)
+                + int(st.session_state.get(f"pln_r_{i}_{j}_{a}_hi",
+                                           (prev_aas[a] if a < len(prev_aas) else {}).get("horas_independientes") or 0) or 0)
+                for a in range(int(naa)))
+    if not horas:
+        faltan.append("horas")
+    return faltan
+
+
+def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, contexto,
+                            modo_competencia=False):
     raps = [r.strip() for r in (raps_texto or "").splitlines() if r.strip()]
     if not raps:
         st.info("✍️ Escribe los Resultados de Aprendizaje (uno por línea) para detallarlos.")
@@ -2174,9 +2209,10 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
         return int(st.session_state.get(f"pln_r_{i}_{j}_naa",
                                         len(prev.get("actividades") or []) or fila.get("aa_por_rap", 1) or 1))
 
-    b1, b2 = st.columns(2)
     total_aa = sum(_naa(j) for j in range(len(raps)))
-    with b1:
+    b1, b2 = st.columns(2) if not modo_competencia else (None, None)
+    if not modo_competencia:
+      with b1:
         if st.button(f"⚖️ Repartir {horas_dir} h directas / {horas_ind} h independientes entre "
                      f"{total_aa} actividad(es) de aprendizaje", key=f"pln_rep_{i}",
                      use_container_width=True,
@@ -2187,11 +2223,13 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
                 _repartir_mayor_residuo(horas_dir, len(celdas)),
                 _repartir_mayor_residuo(horas_ind, len(celdas)))))
             st.rerun()
-    with b2:
-        ia_todos = bool(cli_ia) and st.button("🤖 Generar TODOS los RAP con IA", key=f"pln_ia_todos_{i}",
-                                               use_container_width=True, type="primary")
-    if not cli_ia:
-        st.caption("💡 Configura la IA para autocompletar; sin IA puedes diligenciar a mano.")
+    ia_todos = False
+    if not modo_competencia:
+        with b2:
+            ia_todos = bool(cli_ia) and st.button("🤖 Generar TODOS los RAP con IA", key=f"pln_ia_todos_{i}",
+                                                   use_container_width=True, type="primary")
+        if not cli_ia:
+            st.caption("💡 Configura la IA para autocompletar; sin IA puedes diligenciar a mano.")
 
     def _lanzar(indices):
         oficial = _oficial_de_competencia(contexto.get("competencia", ""))
@@ -2231,9 +2269,11 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
     for j, rap in enumerate(raps):
         prev = _prev(j)
         prev_aas = prev.get("actividades") or ([prev] if prev else [])
-        vacio = not any(str(prev.get(c, "")).strip() for c, _, _ in CAMPOS_RAP_UI) and \
-            not any(str(a.get("actividades_aprendizaje", "")).strip() for a in prev_aas)
-        with st.expander(f"{'⚪' if vacio else '🟢'} RAP {j + 1} · {_naa(j)} AA · {rap[:90]}", expanded=False):
+        faltan = _estado_rap(i, j, prev, _naa(j))
+        etiqueta_estado = "✅ completo" if not faltan else "⚠️ falta: " + ", ".join(faltan)
+        with st.expander(f"RAP {j + 1} · {etiqueta_estado} · {_naa(j)} actividad(es) — {rap[:80]}",
+                         expanded=bool(faltan) and modo_competencia):
+            st.markdown(f"**{rap}**")
             c0, c1 = st.columns([1, 2])
             with c0:
                 naa = st.number_input("Nº de actividades de aprendizaje (filas)", 1, MAX_AA,
@@ -2279,6 +2319,8 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
                                     "ambiente": amb, "materiales": mat})
         detalle.append({"rap": rap, **valores, "actividades": actividades})
 
+    if modo_competencia:
+        return detalle
     cuadra = (total_hd, total_hi) == (int(horas_dir), int(horas_ind))
     (st.caption if cuadra else st.warning)(
         f"⏱️ Suma de las actividades: {total_hd} h directas + {total_hi} h independientes = "
@@ -2298,7 +2340,7 @@ _PREFIJOS_WIDGETS_PLN = (
 )
 
 
-def _aplicar_filas_planeacion(proy, nuevas_filas, nombre_archivo=""):
+def _aplicar_filas_planeacion(proy, nuevas_filas, nombre_archivo="", modo="fase", meta=None):
     """Autocompleta el encabezado con el proyecto y reemplaza las filas (limpiando el estado
     de los widgets anteriores para que se recreen con los valores nuevos)."""
     st.session_state.plan_programa = proy.get("programa_formacion", "")
@@ -2313,13 +2355,16 @@ def _aplicar_filas_planeacion(proy, nuevas_filas, nombre_archivo=""):
         st.session_state.pop(k, None)
     st.session_state.planeacion_filas = nuevas_filas
     st.session_state.planeacion_nombre = nombre_archivo
+    st.session_state.planeacion_modo = modo
+    st.session_state.planeacion_meta = meta or {}
+    st.session_state.pop("ultimo_archivo_planeacion", None)
     st.rerun()
 
 
 def _fila_desde_proyecto(fase, actividad, comp, raps, aa_por_rap=1, hd=0, hi=0):
     """Fila (bloque de competencia) lista para el modo por RAP, con el esqueleto de
     actividades de aprendizaje y las horas repartidas por mayor residuo."""
-    textos = [f"{r['codigo']} - {r['nombre']}" for r in raps]
+    textos = [f"{r['codigo']} - {r['nombre']}" if r.get("codigo") else r["nombre"] for r in raps]
     n = max(1, len(textos) * aa_por_rap)
     rep_d, rep_i = _repartir_mayor_residuo(hd, n), _repartir_mayor_residuo(hi, n)
     detalle, k = [], 0
@@ -2369,7 +2414,7 @@ def _cargar_por_competencia(proy):
     for fase, act, _, raps in u["bloques"]:
         st.markdown(f"**{fase}** — {act[:110]}")
         for r in raps:
-            st.caption(f"• {r['codigo']} – {r['nombre'][:140]}")
+            st.caption(f"• {(r['codigo'] + ' – ') if r.get('codigo') else ''}{r['nombre'][:140]}")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -2407,7 +2452,10 @@ def _cargar_por_competencia(proy):
         hd_b, hi_b = _prop(hd_total), _prop(hi_total)
         filas = [_fila_desde_proyecto(f, a, c, r, int(aa_por_rap), hd_b[k], hi_b[k])
                  for k, (f, a, c, r) in enumerate(u["bloques"])]
-        _aplicar_filas_planeacion(proy, filas, nombre_archivo=cod)
+        _aplicar_filas_planeacion(proy, filas, nombre_archivo=cod, modo="competencia",
+                                  meta={"codigo": cod, "nombre": u["comp"]["nombre"],
+                                        "horas_oficiales": int(dur or 0), "total_h": int(total_h),
+                                        "pct_ind": int(pct_ind)})
 
 
 def _cargar_por_fase(proy):
@@ -2425,6 +2473,160 @@ def _cargar_por_fase(proy):
         filas = [_fila_desde_proyecto(fase_sel["nombre"], a["nombre"], c, c.get("raps", []), int(aa_por_rap))
                  for a in fase_sel.get("actividades", []) for c in a.get("competencias", [])]
         _aplicar_filas_planeacion(proy, filas, nombre_archivo=re.sub(r"\W+", "_", fase_sel["nombre"])[:20])
+
+
+def _vista_competencia(filas, cli_ia, cfg, ctx_general):
+    """Formulario guiado para planear UNA competencia (un bloque por fase en que aparece)."""
+    meta = st.session_state.get("planeacion_meta", {})
+    comp_txt = filas[0].get("competencia", "") if filas else ""
+    oficial = _oficial_de_competencia(comp_txt)
+    resumen = st.container(border=True)          # se llena al final con los totales reales
+
+    st.markdown("##### Pasos: ① revise los RAP de cada fase → ② complete con IA o a mano → "
+                "③ ajuste horas → ④ genere el Excel")
+
+    # ---- Acciones globales ----
+    g1, g2, g3 = st.columns([1.2, 1, 1])
+    with g1:
+        completar = st.button("🤖 Completar con IA todo lo que falte", type="primary",
+                              use_container_width=True, disabled=not cli_ia,
+                              help=None if cli_ia else "Configure la IA en «Configurar IA».")
+    with g2:
+        total_h = st.number_input("Horas de la competencia", 0, 3000,
+                                  int(meta.get("total_h") or meta.get("horas_oficiales") or 0),
+                                  key="pln_c_total_h")
+    with g3:
+        pct = st.number_input("% trabajo independiente", 0, 100, int(meta.get("pct_ind", 0)),
+                              key="pln_c_pct")
+    if st.button("⚖️ Repartir estas horas entre todas las actividades de aprendizaje",
+                 use_container_width=True):
+        celdas = []
+        for i, fila in enumerate(filas):
+            raps_i = [r for r in fila.get("raps", "").splitlines() if r.strip()]
+            for j in range(len(raps_i)):
+                naa = int(st.session_state.get(f"pln_r_{i}_{j}_naa", fila.get("aa_por_rap", 1) or 1))
+                celdas += [(i, j, a) for a in range(naa)]
+        hi_t = round(int(total_h) * int(pct) / 100)
+        rd = _repartir_mayor_residuo(int(total_h) - hi_t, len(celdas))
+        ri = _repartir_mayor_residuo(hi_t, len(celdas))
+        pend = {}
+        for (i, j, a), d, h in zip(celdas, rd, ri):
+            pend.setdefault(i, {})[(j, a)] = (d, h)
+        for i, dic in pend.items():
+            st.session_state[f"pln_pend_horas_{i}"] = dic
+        st.session_state["planeacion_meta"] = {**meta, "total_h": int(total_h), "pct_ind": int(pct)}
+        st.rerun()
+
+    if completar:
+        tareas = []
+        for i, fila in enumerate(filas):
+            raps_i = [r.strip() for r in fila.get("raps", "").splitlines() if r.strip()]
+            prev = fila.get("raps_detalle") or []
+            for j, rap in enumerate(raps_i):
+                naa = int(st.session_state.get(f"pln_r_{i}_{j}_naa", fila.get("aa_por_rap", 1) or 1))
+                faltan = _estado_rap(i, j, prev[j] if j < len(prev) else {}, naa)
+                if set(faltan) - {"horas"}:
+                    tareas.append((i, j, rap, raps_i, naa, fila))
+        if not tareas:
+            st.success("Todos los RAP ya tienen saberes, criterios, actividad y evidencia.")
+        else:
+            barra = st.progress(0.0, text=f"La IA está completando {len(tareas)} RAP…")
+            errores = []
+            for n, (i, j, rap, raps_i, naa, fila) in enumerate(tareas, 1):
+                contexto = {**ctx_general, "fase": fila.get("fase", ""),
+                            "actividad_proyecto": fila.get("actividad_proyecto", ""),
+                            "competencia": fila.get("competencia", "")}
+                try:
+                    res = _ia_un_rap(cli_ia, contexto, rap, raps_i, oficial, n_aa=naa)
+                    st.session_state[f"pln_pend_rap_{i}_{j}"] = {"i": i, "j": j, "resultado": res}
+                except Exception as e:
+                    errores.append(f"{fila.get('fase', '')} · RAP {j + 1}: {e}")
+                barra.progress(n / len(tareas), text=f"RAP {n}/{len(tareas)}")
+            st.session_state["pln_c_msg"] = {"ok": len(tareas) - len(errores), "errores": errores,
+                                             "oficial": bool(oficial)}
+            st.rerun()
+    msg = st.session_state.get("pln_c_msg")
+    if msg:
+        if msg["ok"]:
+            st.success(f"✅ La IA completó {msg['ok']} RAP. "
+                       + ("🔒 Saberes y criterios copiados textualmente del diseño curricular."
+                          if msg["oficial"] else
+                          "⚠️ Sin diseño curricular cargado: saberes y criterios redactados por la IA."))
+        for e in msg["errores"]:
+            st.error(e)
+
+    # ---- Una pestaña por fase ----
+    etiquetas = []
+    for fila in filas:
+        n = len([r for r in fila.get("raps", "").splitlines() if r.strip()])
+        etiquetas.append(f"{fila.get('fase', '¿fase?')} · {n} RAP")
+    tabs = st.tabs(etiquetas)
+    filas_editadas, filas_vista = [], []
+    for i, (tab, fila) in enumerate(zip(tabs, filas)):
+        with tab:
+            st.caption(f"**Actividad del proyecto:** {fila.get('actividad_proyecto', '')}")
+            contexto = {**ctx_general, "fase": fila.get("fase", ""),
+                        "actividad_proyecto": fila.get("actividad_proyecto", ""),
+                        "competencia": fila.get("competencia", "")}
+            detalle = _editor_raps_planeacion(i, fila, fila.get("raps", ""), fila.get("horas_directas", 0),
+                                              fila.get("horas_independientes", 0), cli_ia, contexto,
+                                              modo_competencia=True)
+        filas_editadas.append({**fila, "raps_detalle": detalle, "modo_rap": True})
+        for j, d in enumerate(detalle):
+            for a, aa in enumerate(d.get("actividades", [])):
+                filas_vista.append({
+                    "Fase": fila.get("fase", ""), "RAP": f"{j + 1}. {d['rap'][:55]}",
+                    "AA": a + 1, "Actividad de aprendizaje": (aa.get("actividades_aprendizaje") or "—")[:70],
+                    "H. directas": aa.get("horas_directas", 0), "H. indep.": aa.get("horas_independientes", 0)})
+
+    # ---- Datos comunes a toda la competencia ----
+    with st.expander("👥 Ambiente, materiales, instructores y observaciones (comunes a todas las filas)"):
+        c1, c2 = st.columns(2)
+        base = filas[0] if filas else {}
+        with c1:
+            amb = st.text_input("Ambiente de formación", key=_init_estado("pln_c_amb", base.get("ambiente", "")))
+            mat = st.text_area("Materiales de formación", height=70,
+                               key=_init_estado("pln_c_mat", base.get("materiales", "")))
+        with c2:
+            ins = st.text_input("Instructores responsables", key=_init_estado(
+                "pln_c_ins", base.get("instructores") or cfg.get("smtp_nombre") or cfg.get("autor_default", "")))
+            obs = st.text_input("Observaciones", key=_init_estado("pln_c_obs", base.get("observaciones", "")))
+    for f in filas_editadas:
+        f.update({"ambiente": amb, "materiales": mat, "instructores": ins, "observaciones": obs})
+
+    # ---- Vista previa = filas que tendrá el Excel ----
+    with st.expander(f"👁️ Vista previa: {len(filas_vista)} fila(s) que tendrá el Excel", expanded=False):
+        if filas_vista:
+            st.dataframe(pd.DataFrame(filas_vista), hide_index=True, use_container_width=True)
+
+    # ---- Resumen arriba ----
+    hd = sum(r["H. directas"] or 0 for r in filas_vista)
+    hi = sum(r["H. indep."] or 0 for r in filas_vista)
+    n_raps = sum(len(f["raps_detalle"]) for f in filas_editadas)
+    incompletos = sum(1 for i, f in enumerate(filas_editadas) for j, d in enumerate(f["raps_detalle"])
+                      if _estado_rap(i, j, d, len(d.get("actividades") or [1])))
+    with resumen:
+        st.markdown(f"### 🎯 {comp_txt}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Fases", len(filas_editadas))
+        m2.metric("RAP", n_raps, delta=f"{incompletos} por completar" if incompletos else "completos",
+                  delta_color="inverse" if incompletos else "normal")
+        m3.metric("Horas planeadas", f"{hd + hi} h", help=f"{hd} directas + {hi} independientes")
+        ofi = int(meta.get("horas_oficiales") or (oficial or {}).get("duracion_horas") or 0)
+        m4.metric("Horas del diseño", f"{ofi} h" if ofi else "—",
+                  delta=(None if not ofi else ("cuadra" if hd + hi == ofi else f"{hd + hi - ofi:+d} h")),
+                  delta_color="off" if not ofi or hd + hi == ofi else "inverse")
+        if not oficial:
+            st.caption("ℹ️ Cargue el diseño curricular en «📚 Diseños Curriculares» para traer horas, "
+                       "saberes y criterios oficiales.")
+        if st.button("↩️ Elegir otra competencia", key="pln_c_otra"):
+            for k in [k for k in list(st.session_state.keys())
+                      if k.startswith(_PREFIJOS_WIDGETS_PLN + ("pln_c_",))]:
+                st.session_state.pop(k, None)
+            st.session_state.planeacion_filas = []
+            st.session_state.planeacion_modo = ""
+            st.rerun()
+    return filas_editadas
 
 
 def _fila_planeacion_vacia():

@@ -450,7 +450,7 @@ def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
                 "raps": [],
             }
         raps = fases[f]["actividades"][clave_canon]["competencias"][cc]["raps"]
-        if not any(r["codigo"] == fila["codigo_rap"] for r in raps):
+        if not any((r["codigo"] or r["nombre"]) == (fila["codigo_rap"] or re.sub(r"\s+", " ", fila["nombre_rap"]).strip()) for r in raps):
             raps.append({
                 "codigo": fila["codigo_rap"],
                 "nombre": re.sub(r'\s+', ' ', fila["nombre_rap"]).strip(),
@@ -511,7 +511,7 @@ def estructurar_proyecto(info_basica: dict, filas: list) -> dict:
                 "raps": [],
             }
         raps = todas_competencias[cc]["raps"]
-        if not any(r["codigo"] == fila["codigo_rap"] for r in raps):
+        if not any((r["codigo"] or r["nombre"]) == (fila["codigo_rap"] or re.sub(r"\s+", " ", fila["nombre_rap"]).strip()) for r in raps):
             raps.append({
                 "codigo": fila["codigo_rap"],
                 "nombre": re.sub(r'\s+', ' ', fila["nombre_rap"]).strip(),
@@ -539,7 +539,7 @@ def procesar_pdf(pdf_bytes: bytes) -> dict:
         filas = [{"fase": r["fase"], "actividad": r["actividad"],
                   "codigo_competencia": r["comp_codigo"], "nombre_competencia": r["competencia"],
                   "codigo_rap": r["rap_codigo"], "nombre_rap": r["rap"]}
-                 for r in parsear_tabla_proyecto(io.BytesIO(pdf_bytes)) if r["rap_codigo"]]
+                 for r in parsear_tabla_proyecto(io.BytesIO(pdf_bytes)) if r["rap_codigo"] or r["rap"]]
     except Exception:
         filas = []
     if not filas:

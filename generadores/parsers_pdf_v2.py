@@ -18,14 +18,22 @@ import pdfplumber
 RE_COD = re.compile(r"^(\d{5,9})\s*-\s*(.+)$", re.S)
 def limpia(t): return re.sub(r"\s+", " ", (t or "")).strip()
 def parsear_tabla_proyecto(ruta):
+    """Una fila de la tabla 3 = un RAP. Reglas:
+    - Fila con código de RAP ("514293 - ...") → RAP nuevo.
+    - Primera fila de una página SIN código → es la cola de la fila anterior (se partió
+      entre páginas): su texto se pega a la fila previa.
+    - Fila sin código a mitad de página con texto de RAP → RAP nuevo sin código (no se pierde).
+    - Fase, actividad o competencia vacías (celdas combinadas en otros reportes) se
+      rellenan con el valor de la fila anterior."""
     filas, en_tabla = [], False
     with pdfplumber.open(ruta) as pdf:
         for pg in pdf.pages:
-            # la tabla 3 termina donde empieza "4. Rubros" o "5. Equipo": recortar la página ahí
+            # la tabla 3 termina en "3.5 Organización", "4. Rubros" o "5. Equipo": recortar ahí
             corte = None
-            for m in pg.search(r"^\s*[45]\.\s*(Rubros|Equipo)", regex=True):
+            for m in pg.search(r"3\.5\s+Organizaci|[45]\.\s*Rubros|[45]\.\s*Equipo que", regex=True):
                 corte = m["top"] if corte is None else min(corte, m["top"])
             zona = pg.crop((0, 0, pg.width, corte)) if corte else pg
+            primera_de_pagina = True
             for t in zona.extract_tables():
                 if not t or len(t[0]) != 4: continue
                 for r in t:
@@ -34,12 +42,17 @@ def parsear_tabla_proyecto(ruta):
                         en_tabla = True; continue
                     if re.match(r"^[45]\.\s", c[0]): en_tabla = False
                     if not en_tabla or not any(c): continue
-                    # fila partida entre páginas: sin fase o sin código de RAP al inicio
-                    if filas and (not c[0] or not RE_COD.match(c[2])):
+                    tiene_codigo = bool(RE_COD.match(c[2]))
+                    es_cola = filas and not tiene_codigo and (primera_de_pagina or not c[2])
+                    primera_de_pagina = False
+                    if es_cola:
                         prev = filas[-1]
                         for k in range(4):
                             if c[k] and not prev[k].endswith(c[k]): prev[k] = (prev[k] + " " + c[k]).strip()
                         continue
+                    if filas:
+                        for k in (0, 1, 3):
+                            if not c[k]: c[k] = filas[-1][k]
                     filas.append(c)
     out = []
     for f, act, rap, comp in filas:
