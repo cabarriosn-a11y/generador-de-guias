@@ -2965,13 +2965,21 @@ def seccion_guia_desde_planeacion():
     with g2:
         todo_tpl = st.button("📝 Llenar lo vacío con plantilla (sin IA)", use_container_width=True,
                              key=f"{clave}_todo_tpl")
+    fallidos = st.session_state.get(f"{clave}_fallidos") or []
+    reintentar = bool(fallidos) and cli_ia and st.button(
+        f"🔁 Reintentar con IA solo lo que falló ({', '.join(fallidos)})", key=f"{clave}_reint",
+        use_container_width=True)
     if estado_vacios:
         st.caption("Momentos sin descripción: " + ", ".join(estado_vacios)
                    + " — si generas así, se llenan con la plantilla automáticamente.")
-    if todo_ia or todo_tpl:
+    if todo_ia or todo_tpl or reintentar:
+        objetivo = set(fallidos) if reintentar else set(MOMENTOS) | {"presentación", "glosario"}
+        todo_ia = todo_ia or reintentar
         errores = []
         barra = st.progress(0.0, text="Preparando…")
         for n, k in enumerate(MOMENTOS, 1):
+            if k not in objetivo:
+                continue
             sel = st.session_state.get(f"{clave}_tec_{k}") or []
             tecs_k = [por_id[i] for i in sel if i in por_id]
             res = None
@@ -2988,13 +2996,14 @@ def seccion_guia_desde_planeacion():
                 res = {"descripcion": descripcion_plantilla(k, tecs_k[0] if tecs_k else None, bl,
                                                             reparto.get(k, [])), "apoyo": ""}
             st.session_state[f"{clave}_pend_{k}"] = res
-        if todo_ia:
+        if todo_ia and "presentación" in objetivo:
             try:
                 barra.progress(4 / 6, text="Redactando la presentación…")
                 st.session_state[f"{clave}_pend_pres"] = cli_ia.generar_presentacion(
                     {**ctx_ia, "duracion": f"{bl['horas']} horas"})
             except Exception as e:
                 errores.append(f"presentación: {e}")
+        if todo_ia and "glosario" in objetivo:
             try:
                 barra.progress(5 / 6, text="Redactando el glosario…")
                 datos_g = {"competencia": bl["competencia"],
@@ -3006,12 +3015,20 @@ def seccion_guia_desde_planeacion():
             except Exception as e:
                 errores.append(f"glosario: {e}")
         st.session_state[f"{clave}_msg_todo"] = errores
+        st.session_state[f"{clave}_fallidos"] = [e.split(":")[0] for e in errores]
         st.rerun()
     msg_todo = st.session_state.pop(f"{clave}_msg_todo", None)
     if msg_todo is not None:
         if msg_todo:
+            saturado = any("503" in m or "UNAVAILABLE" in m.upper() for m in msg_todo)
             st.warning("Algunas partes no las pudo redactar la IA y quedaron con la plantilla: "
-                       + " · ".join(m[:120] for m in msg_todo))
+                       + ", ".join(m.split(":")[0] for m in msg_todo) + ". "
+                       + ("Gemini estaba saturado (error 503 de Google, no de la app): espera un minuto y "
+                          "pulsa «🔁 Reintentar solo lo que falló»." if saturado else
+                          "Pulsa «🔁 Reintentar solo lo que falló»."))
+            with st.expander("Detalle técnico"):
+                for m in msg_todo:
+                    st.caption(m[:300])
         else:
             st.success("✅ Guía completa: revisa cada momento y ajusta lo que quieras.")
     usadas = set()

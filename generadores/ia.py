@@ -721,34 +721,58 @@ REGLAS:
         if transcurrido < self.pausa_s:
             time.sleep(self.pausa_s - transcurrido)
 
-    def _llamar(self, prompt: str, reintentos: int = 2) -> str:
-        for intento in range(reintentos + 1):
+    # Si el modelo elegido está saturado (503) se prueba con estos, en orden.
+    MODELOS_RESPALDO = ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite",
+                        "gemini-flash-lite-latest")
+
+    def _una_llamada(self, modelo: str, prompt: str) -> str:
+        if self._cliente is not None:
+            resp = self._cliente.models.generate_content(
+                model=modelo, contents=prompt,
+                config=genai_types.GenerateContentConfig(system_instruction=self._system))
+        else:
+            m = self.modelo if modelo == self.modelo_nombre else \
+                genai.GenerativeModel(model_name=modelo, system_instruction=self._system)
+            resp = m.generate_content(prompt)
+        texto = (getattr(resp, "text", None) or "").strip()
+        if not texto:
+            raise RuntimeError("respuesta vacía (posible bloqueo de seguridad o límite de tokens)")
+        return texto
+
+    def _llamar(self, prompt: str, reintentos: int = 3) -> str:
+        """Llama a Gemini con reintentos y espera creciente. Si el modelo está saturado
+        (503 / UNAVAILABLE / overloaded) cambia a un modelo de respaldo; si es límite de uso
+        (429) espera lo que pida Google."""
+        modelos = [self.modelo_nombre] + [m for m in self.MODELOS_RESPALDO if m != self.modelo_nombre]
+        ultimo_error = None
+        idx_modelo = 0
+        for intento in range(reintentos + len(modelos)):
+            modelo = modelos[min(idx_modelo, len(modelos) - 1)]
             self._respetar_pausa()
             try:
-                if self._cliente is not None:
-                    resp = self._cliente.models.generate_content(
-                        model=self.modelo_nombre, contents=prompt,
-                        config=genai_types.GenerateContentConfig(system_instruction=self._system))
-                else:
-                    resp = self.modelo.generate_content(prompt)
+                texto = self._una_llamada(modelo, prompt)
                 self._ultima_llamada_ts = time.time()
-                texto = (getattr(resp, "text", None) or "").strip()
-                if not texto:
-                    raise RuntimeError("Gemini devolvió una respuesta vacía (posible bloqueo de seguridad "
-                                       "o límite de tokens). Intente de nuevo.")
+                self.ultimo_modelo_usado = modelo
                 return texto
             except Exception as e:
                 self._ultima_llamada_ts = time.time()
-                mensaje = str(e)
-                if any(t in mensaje.lower() for t in ("429", "quota", "rate", "resource_exhausted",
-                                                         "503", "unavailable", "overloaded")):
-                    if intento < reintentos:
-                        m = re.search(r"retry.*?(\d+)\s*s", mensaje)
-                        espera = int(m.group(1)) + 2 if m else 30
-                        time.sleep(min(espera, 60))
-                        continue
-                raise RuntimeError(f"Error al llamar a Gemini: {e}")
-        raise RuntimeError("Se agotaron los reintentos por rate limit.")
+                ultimo_error = e
+                msg = str(e).lower()
+                saturado = any(t in msg for t in ("503", "unavailable", "overloaded", "high demand"))
+                limite = any(t in msg for t in ("429", "quota", "resource_exhausted", "rate"))
+                no_existe = "404" in msg or "not found" in msg
+                if saturado or no_existe:
+                    idx_modelo += 1                      # pasar al siguiente modelo
+                    if idx_modelo >= len(modelos):
+                        idx_modelo = 0
+                        time.sleep(min(5 * (intento + 1), 20))
+                    continue
+                if limite and intento < reintentos:
+                    m = re.search(r"retry.*?(\d+(?:\.\d+)?)\s*s", msg)
+                    time.sleep(min(float(m.group(1)) + 2 if m else 15 * (intento + 1), 60))
+                    continue
+                break
+        raise RuntimeError(f"Error al llamar a Gemini: {ultimo_error}")
 
     @staticmethod
     def _aplicar_extra(prompt: str, extra: str) -> str:
