@@ -41,17 +41,17 @@ PAUSA_DEFAULT = 8
 
 
 # ============ PROMPTS POR DEFECTO ============
-SYSTEM_PROMPT_DEFAULT = """Eres ProfeNaturales SENA, instructor experto en ciencias naturales aplicadas al contexto productivo colombiano.
-Estás ayudando a diseñar guías de aprendizaje para aprendices SENA de nivel BÁSICO en programas técnicos.
+SYSTEM_PROMPT_DEFAULT = """Eres instructor experto en diseño curricular y pedagogía del SENA (Colombia), y conoces la Guía de Desarrollo Curricular GFPI-G-060.
+Ayudas a diseñar planeaciones pedagógicas (GFPI-F-134) y guías de aprendizaje (GFPI-F-135).
 
 Reglas obligatorias:
-1. Los aprendices son de NIVEL BÁSICO. No uses lenguaje académico complejo. Habla como instructor de piso, cercano y motivador.
-2. Contextualiza SIEMPRE en escenarios reales del sector productivo colombiano. Cuando el programa sea Logística y se mencione minería, usa Carbones del Cerrejón Limited (La Guajira) como anclaje real.
-3. NO uses empresas ficticias si el usuario menciona un contexto real como Cerrejón.
-4. Usa datos y unidades del Sistema Internacional. Menciona equipos reales del sector (haul trucks, bandas transportadoras, montacargas, etc.).
-5. Estructura tus respuestas para ser DIRECTAMENTE utilizables en una guía SENA GFPI-F-135.
-6. Sé específico y concreto — evita frases genéricas tipo "aplicar el conocimiento".
-7. Cuando se te pida contenido para un campo específico (descripción, ambiente, materiales, etc.), responde SOLO con el contenido de ese campo, sin encabezados ni etiquetas.
+1. El contexto lo dan el PROGRAMA y el PROYECTO FORMATIVO que se te entregan. Contextualiza solo con eso: no traigas empresas, sectores ni casos que no aparezcan en esos datos, y no inventes empresas ficticias.
+2. Lenguaje claro y concreto, adecuado al nivel del programa (técnico o tecnólogo).
+3. Actividades de aprendizaje con la estructura VERBO (infinitivo) + OBJETO + CONDICIÓN (V+O+C): una sola oración, concisa y precisa.
+4. Saberes y criterios de evaluación NUNCA se redactan: vienen del diseño curricular.
+5. Ambiente de formación: el que indique el instructor (por defecto, Polivalente).
+6. Materiales de formación: SOLO consumibles (marcadores, papel, papelógrafos, cinta, fotocopias, etc.). Nunca software, equipos ni plataformas.
+7. Cuando se te pida un campo específico, responde SOLO con el contenido de ese campo, sin encabezados ni etiquetas.
 
 Responde SIEMPRE en español colombiano."""
 
@@ -160,12 +160,12 @@ FORMATO EXACTO DEL JSON A DEVOLVER (todos los campos son OBLIGATORIOS y deben te
 {{
   "saberes_conceptos": "3-5 conceptos y principios que el aprendiz debe saber, separados por comas. Ejemplo: 'Fuerza, masa, peso, fricción, Leyes de Newton, Sistema Internacional de Unidades'",
   "saberes_proceso": "3-5 habilidades y procesos que el aprendiz debe saber HACER, separadas por comas. Ejemplo: 'Identificar principios físicos en operaciones logísticas, aplicar fórmulas F=m·a, analizar cambios físicos en procesos productivos'",
-  "criterios_evaluacion": "3-5 criterios de evaluación concretos y medibles. Cada criterio empieza con verbo en tercera persona. Ejemplo: 'Identifica principios físicos en situaciones reales del sector minero. Resuelve ejercicios cuantitativos aplicando F=m·a con procedimiento y unidades correctas. Propone acciones de mejora aplicables al contexto de Cerrejón'",
+  "criterios_evaluacion": "3-5 criterios de evaluación concretos y medibles. Cada criterio empieza con verbo en tercera persona. Ejemplo: 'Identifica principios físicos en situaciones reales del sector productivo. Resuelve ejercicios cuantitativos aplicando F=m·a con procedimiento y unidades correctas. Propone acciones de mejora aplicables al contexto del proyecto formativo'",
   "actividades_aprendizaje": "Nombre de las actividades de aprendizaje concretas que se desarrollarán. Ejemplo: 'Guía S1 RA-01: Leyes de Newton en logística minera, Quiz interactivo V/F con retroalimentación, Simulador PhET Fuerzas y Movimiento, Video experimental casero'",
   "descripcion_evidencia": "Descripción concreta de las evidencias que produce el aprendiz. Ejemplo: 'Guía autónoma resuelta con procedimiento completo, quiz completado con puntaje mínimo del 80%, video experimental de 3-5 minutos, propuesta escrita de mejora aplicable al contexto RA-04'",
   "estrategias_didacticas": "Estrategias didácticas activas. Ejemplo: 'Aprendizaje Basado en Problemas (ABP), simulación PhET, exposición dialogada, aprendizaje experiencial'",
-  "ambiente": "Ambiente físico requerido. Ejemplo: 'Aula de sistemas con conexión a internet y videobeam'",
-  "materiales": "Materiales de formación necesarios. Ejemplo: 'Computadores con acceso a internet, videobeam, calculadora, simulador PhET, materiales caseros para experimento'",
+  "ambiente": "Polivalente",
+  "materiales": "SOLO consumibles. Ejemplo: 'Marcadores borrables, papel bond, papelógrafos, cinta'",
   "horas_directas": 48,
   "horas_independientes": 48
 }}
@@ -197,11 +197,10 @@ Responde ÚNICAMENTE con un objeto JSON válido (sin markdown ni texto adicional
   "criterios_evaluacion": ["..."],
   "actividades": [
     {{
-      "actividades_aprendizaje": "Un párrafo que inicia con verbo en infinitivo y describe QUÉ hace el aprendiz, CON QUÉ técnica o herramienta y PARA QUÉ producto (60-90 palabras).",
-      "descripcion_evidencia": "Inicia con 'Evidencia de Conocimiento:', 'Evidencia de Desempeño:' o 'Evidencia de Producto:' (puede combinar) y describe el entregable verificable (40-70 palabras).",
-      "estrategias_didacticas": "1 o 2 estrategias activas con el formato 'Nombre de la estrategia: cómo se aplica en esta actividad.' (ABP, estudio de caso, juego de roles, aula invertida, simulación, proyecto, etc.)",
-      "ambiente": "Ambiente tipificado SENA (p. ej. 'Polivalente', 'Sistemas', 'Laboratorio de ...').",
-      "materiales": "Materiales de formación separados por comas."
+      "actividades_aprendizaje": "UNA oración V+O+C: VERBO en infinitivo + OBJETO + CONDICIÓN (15 a 35 palabras). Ej.: 'Clasificar los inventarios de la bodega según el método ABC y las políticas de la organización.'",
+      "descripcion_evidencia": "Inicia con 'Evidencia de Conocimiento:', 'Evidencia de Desempeño:' o 'Evidencia de Producto:' (puede combinar) y describe el entregable verificable (25-50 palabras).",
+      "estrategias_didacticas": "1 o 2 estrategias activas con el formato 'Nombre: cómo se aplica (individual o en equipo).' (ABP, estudio de caso, juego de roles, aula invertida, simulación, proyecto, etc.)",
+      "materiales": "SOLO consumibles separados por comas (marcadores, papel bond, papelógrafos, cinta, fotocopias…). Nada de software ni equipos."
     }}
   ]
 }}
@@ -209,9 +208,9 @@ Responde ÚNICAMENTE con un objeto JSON válido (sin markdown ni texto adicional
 REGLAS:
 1. {regla_saberes}
 2. La actividad y la evidencia deben desarrollar SOLO este RAP y ser coherentes con la actividad del proyecto.
-3. Contextualiza al sector del programa y a La Guajira (Colombia) cuando aplique; no inventes empresas ficticias.
-4. No incluyas horas: el instructor las asigna manualmente.
-5. "actividades" debe tener EXACTAMENTE {n_aa} actividad(es) de aprendizaje para este RAP. Si son varias, deben ser distintas y progresivas (de la apropiación a la aplicación) y cada una con su propia evidencia."""
+3. Contextualiza SOLO con el programa y el proyecto formativo dados; no traigas empresas ni casos externos y no inventes empresas ficticias.
+4. No incluyas horas ni ambiente: los define el instructor (ambiente: Polivalente).
+5. "actividades" debe tener EXACTAMENTE {n_aa} actividad(es) de aprendizaje para este RAP, cada una en forma V+O+C (GFPI-G-060). Si son varias, que sean distintas y cubran las áreas de desarrollo cognitiva (saber), procedimental (hacer) y valorativa-actitudinal (ser), cada una con su propia evidencia."""
 
 
 PROMPTS_DEFAULT = {
@@ -225,11 +224,30 @@ PROMPTS_DEFAULT = {
 }
 
 
+NO_CONSUMIBLES = ("software", "computador", "portátil", "portatil", "video beam", "videobeam",
+                  "proyector", "televisor", "tablet", "celular", "impresora", "simulador", "plataforma",
+                  "internet", "erp", "aplicativo", "app ", "programa ", "licencia", "equipo de cómputo",
+                  "herramienta digital", "excel", "power bi", "wms")
+
+
+def solo_consumibles(texto: str) -> str:
+    """Materiales de formación = solo consumibles. Quita software, equipos y plataformas."""
+    partes = [x.strip() for x in re.split(r"[,;\n]+", str(texto or "")) if x.strip()]
+    ok = [x for x in partes if not any(t in (x.lower() + " ") for t in NO_CONSUMIBLES)]
+    return ", ".join(ok)
+
+
 # ============ GESTIÓN DE PROMPTS PERSONALIZADOS ============
+_MARCAS_PROMPT_VIEJO = ("como anclaje real", "ProfeNaturales SENA")
+
+
 def cargar_prompts(prompts_file: Path) -> dict:
     if prompts_file.exists():
         try:
             custom = json.loads(prompts_file.read_text(encoding="utf-8"))
+            # el prompt de sistema anterior anclaba todo a una empresa: se reemplaza por el nuevo
+            if any(m in str(custom.get("system", "")) for m in _MARCAS_PROMPT_VIEJO):
+                custom.pop("system", None)
             return {**PROMPTS_DEFAULT, **custom}
         except Exception:
             pass
@@ -545,6 +563,9 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
                 a = {"actividades_aprendizaje": str(a)}
             limpio.append({c: ("\n".join(a.get(c)) if isinstance(a.get(c), list)
                                else str(a.get(c) or "").strip()) for c in campos_aa})
+        for a in limpio:
+            a["ambiente"] = ""                       # lo define el instructor (Polivalente)
+            a["materiales"] = solo_consumibles(a.get("materiales", ""))
         n_aa = max(1, int(datos.get("n_aa", 1) or 1))
         limpio = (limpio + [dict.fromkeys(campos_aa, "") for _ in range(n_aa)])[:n_aa]
         res["actividades"] = limpio

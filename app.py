@@ -1719,20 +1719,15 @@ def seccion_planeacion_pedagogica():
     with col1:
         fecha_elab = st.date_input("Fecha de elaboración", value=date.today(),
                                     key="plan_fecha").isoformat()
-        programa = st.text_input("Denominación del Programa", key=_init_estado(
-            "plan_programa", "Técnico en Integración de Operaciones Logísticas"))
+        programa = st.text_input("Denominación del Programa", key=_init_estado("plan_programa", ""))
         modalidad = st.selectbox("Modalidad", ["Presencial", "Virtual", "A distancia", "Mixta"],
                                   key="plan_modalidad")
         codigo_programa = st.text_input("Código y versión del Programa",
-                                        key=_init_estado("plan_cod_prog", "137136 - Versión 1"))
+                                        key=_init_estado("plan_cod_prog", ""))
     with col2:
-        proyecto = st.text_area("Nombre del Proyecto Formativo", height=100, key=_init_estado(
-            "plan_proy", "REGISTRAR EL DESARROLLO DE LAS OPERACIONES DE TRANSPORTE, "
-                         "ALMACENAMIENTO, DISTRIBUCIÓN, MANEJO Y CONTROL DE INVENTARIOS "
-                         "EN EL DEPARTAMENTO DE MANTENIMIENTO DE LA EMPRESA "
-                         "CARBONES DEL CERREJÓN LIMITED"))
-        codigo_proy = st.text_input("Código del Proyecto",
-                                    key=_init_estado("plan_cod_proy", "PF-CERREJON-2026-01"))
+        proyecto = st.text_area("Nombre del Proyecto Formativo", height=100,
+                                key=_init_estado("plan_proy", ""))
+        codigo_proy = st.text_input("Código del Proyecto", key=_init_estado("plan_cod_proy", ""))
         equipo = st.text_input("Equipo Curricular", key=_init_estado(
             "plan_equipo", cfg.get("smtp_nombre") or cfg.get("autor_default", "Carlos Barrios")))
         regional = st.text_input("Regional y Centro de Formación", key=_init_estado(
@@ -2120,7 +2115,7 @@ CAMPOS_RAP_UI = [
 ]
 # Campos propios de CADA actividad de aprendizaje (AA) — cada AA es una fila del Excel
 CAMPOS_AA_UI = [
-    ("actividades_aprendizaje", "Actividad de aprendizaje a desarrollar", 100),
+    ("actividades_aprendizaje", "Actividad de aprendizaje (Verbo infinitivo + Objeto + Condición)", 100),
     ("descripcion_evidencia", "Descripción de la evidencia de aprendizaje", 80),
     ("estrategias_didacticas", "Estrategias didácticas activas", 80),
 ]
@@ -2198,6 +2193,10 @@ def _listas_oficiales(oficial: dict) -> dict:
 
 _CAMPO_LISTA = {"saberes_conceptos": "conceptos", "saberes_proceso": "proceso",
                 "criterios_evaluacion": "criterios"}
+# Códigos internos para sistematizar (se ven en la app y se guardan; NO van al formato oficial):
+# SC = saber de concepto, SP = saber de proceso, CE = criterio de evaluación, numerados según
+# su orden en el diseño curricular de la competencia.
+PREFIJO_CODIGO = {"saberes_conceptos": "SC", "saberes_proceso": "SP", "criterios_evaluacion": "CE"}
 
 
 def _asignados_actuales(i, j) -> dict:
@@ -2380,11 +2379,15 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
                         norm = lambda t: re.sub(r"\W+", "", t.upper())
                         por_norm = {norm(o): o for o in opciones}
                         defecto = [por_norm[norm(t)] for t in previos_txt if norm(t) in por_norm]
+                        pref = PREFIJO_CODIGO[campo]
                         sel = st.multiselect(f"🔒 {etiqueta} (del diseño)", opciones,
                                              key=_init_estado(f"pln_r_{i}_{j}_sel_{campo}", defecto),
+                                             format_func=lambda o, ops=opciones, pf=pref:
+                                                 f"{pf}{ops.index(o) + 1:02d} · {o}",
                                              placeholder="Elija del diseño curricular…")
                         sel = [o for o in opciones if o in sel]          # orden del diseño
-                        valores[campo] = "\n\n".join(sel)
+                        valores[campo] = "\n\n".join(sel)              # el Excel lleva solo el texto
+                        valores[f"codigos_{campo}"] = [f"{pref}{opciones.index(o) + 1:02d}" for o in sel]
                     else:
                         k = _init_estado(f"pln_r_{i}_{j}_{campo}", str(prev.get(campo, "")))
                         valores[campo] = st.text_area(etiqueta, height=alto, key=k)
@@ -2407,10 +2410,14 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
                     hi = st.number_input("Horas independientes", 0, 1000, key=_init_estado(
                         f"pln_r_{i}_{j}_{a}_hi", int(pa.get("horas_independientes") or 0)))
                 with h3:
-                    amb = st.text_input("Ambiente (si difiere)", key=_init_estado(
-                        f"pln_r_{i}_{j}_{a}_ambiente", str(pa.get("ambiente", ""))))
+                    if modo_competencia:
+                        amb = ""                     # ambiente común (Polivalente / Convencional / Cancha)
+                        st.caption("Ambiente: el común de la competencia")
+                    else:
+                        amb = st.text_input("Ambiente (si difiere)", key=_init_estado(
+                            f"pln_r_{i}_{j}_{a}_ambiente", str(pa.get("ambiente", ""))))
                 with h4:
-                    mat = st.text_input("Materiales (si difieren)", key=_init_estado(
+                    mat = st.text_input("Materiales consumibles (si difieren)", key=_init_estado(
                         f"pln_r_{i}_{j}_{a}_materiales", str(pa.get("materiales", ""))))
                 total_hd += hd
                 total_hi += hi
@@ -2526,8 +2533,9 @@ def _cargar_por_competencia(proy):
                                   help=("Tomadas del diseño curricular cargado." if dur else
                                         "Cargue el diseño curricular para traerlas automáticamente."))
     with c3:
-        pct_ind = st.number_input("% trabajo independiente", 0, 100, 0, key="pln_pct_ind",
-                                  help="Se reparte con mayor residuo para que la suma cuadre exacto.")
+        pct_ind = st.number_input("% trabajo independiente", 0, 100, 20, key="pln_pct_ind",
+                                  help="GFPI-G-060, Tabla 5: presencial 80 % directo / 20 % independiente. "
+                                       "Se reparte con mayor residuo para que la suma cuadre exacto.")
     if not oficial:
         st.info("ℹ️ No hay diseño curricular cargado para esta competencia: las horas y los saberes "
                 "oficiales no se pueden traer. Cárguelo en «📚 Diseños Curriculares».")
@@ -2616,8 +2624,8 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
                                   int(meta.get("total_h") or meta.get("horas_oficiales") or 0),
                                   key="pln_c_total_h")
     with g3:
-        pct = st.number_input("% trabajo independiente", 0, 100, int(meta.get("pct_ind", 0)),
-                              key="pln_c_pct")
+        pct = st.number_input("% trabajo independiente", 0, 100, int(meta.get("pct_ind", 20)),
+                              key="pln_c_pct", help="GFPI-G-060: presencial 80/20.")
     if st.button("⚖️ Repartir estas horas entre todas las actividades de aprendizaje",
                  use_container_width=True):
         celdas = []
@@ -2723,13 +2731,19 @@ def _vista_competencia(filas, cli_ia, cfg, ctx_general):
                     "H. directas": aa.get("horas_directas", 0), "H. indep.": aa.get("horas_independientes", 0)})
 
     # ---- Datos comunes a toda la competencia ----
-    with st.expander("👥 Ambiente, materiales, instructores y observaciones (comunes a todas las filas)"):
+    with st.expander("👥 Ambiente, materiales, instructores y observaciones (comunes a todas las filas)",
+                     expanded=False):
         c1, c2 = st.columns(2)
         base = filas[0] if filas else {}
         with c1:
-            amb = st.text_input("Ambiente de formación", key=_init_estado("pln_c_amb", base.get("ambiente", "")))
-            mat = st.text_area("Materiales de formación", height=70,
-                               key=_init_estado("pln_c_mat", base.get("materiales", "")))
+            opciones_amb = ["Polivalente", "Convencional", "Cancha"]
+            amb_prev = base.get("ambiente") if base.get("ambiente") in opciones_amb else "Polivalente"
+            amb = st.selectbox("Ambiente de formación", opciones_amb,
+                               key=_init_estado("pln_c_amb", amb_prev))
+            mat = st.text_area("Materiales de formación (solo consumibles)", height=70,
+                               key=_init_estado("pln_c_mat", base.get("materiales") or
+                                                "Marcadores borrables, papel bond, papelógrafos"),
+                               help="Solo consumibles: marcadores, papel, papelógrafos, cinta, fotocopias…")
         with c2:
             ins = st.text_input("Instructores responsables", key=_init_estado(
                 "pln_c_ins", base.get("instructores") or cfg.get("smtp_nombre") or cfg.get("autor_default", "")))
