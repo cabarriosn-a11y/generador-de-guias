@@ -10,11 +10,23 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# SDK oficial vigente: google-genai (`from google import genai`). El paquete anterior
+# google-generativeai quedó sin soporte; se usa solo como respaldo si el nuevo no está.
 try:
-    import google.generativeai as genai
-    GEMINI_DISPONIBLE = True
+    from google import genai as genai_nuevo
+    from google.genai import types as genai_types
+    SDK_NUEVO = True
 except ImportError:
-    GEMINI_DISPONIBLE = False
+    SDK_NUEVO = False
+try:
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        import google.generativeai as genai
+    SDK_VIEJO = True
+except ImportError:
+    SDK_VIEJO = False
+GEMINI_DISPONIBLE = SDK_NUEVO or SDK_VIEJO
 
 
 # ============ RATE LIMITING ============
@@ -249,7 +261,7 @@ class GeminiCliente:
     def __init__(self, api_key: str, modelo: str = "gemini-2.5-flash",
                  prompts: Optional[dict] = None):
         if not GEMINI_DISPONIBLE:
-            raise ImportError("google-generativeai no está instalado. Ejecuta: pip install google-generativeai")
+            raise ImportError("Falta la librería de Gemini. Ejecuta: pip install google-genai")
         if not api_key or not api_key.strip():
             raise ValueError("Se requiere una API key de Gemini. Obtenla gratis en https://aistudio.google.com/apikey")
 
@@ -258,11 +270,14 @@ class GeminiCliente:
         self.pausa_s = PAUSAS_POR_MODELO.get(modelo, PAUSA_DEFAULT)
         self._ultima_llamada_ts = 0.0
 
-        genai.configure(api_key=api_key.strip())
-        self.modelo = genai.GenerativeModel(
-            model_name=modelo,
-            system_instruction=self.prompts.get("system", SYSTEM_PROMPT_DEFAULT),
-        )
+        self._system = self.prompts.get("system", SYSTEM_PROMPT_DEFAULT)
+        if SDK_NUEVO:
+            self._cliente = genai_nuevo.Client(api_key=api_key.strip())
+            self.modelo = None
+        else:
+            genai.configure(api_key=api_key.strip())
+            self._cliente = None
+            self.modelo = genai.GenerativeModel(model_name=modelo, system_instruction=self._system)
 
     # ---------- Métodos públicos ----------
     def generar_presentacion(self, datos: dict, instrucciones_extra: str = "") -> str:
@@ -565,13 +580,23 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
         for intento in range(reintentos + 1):
             self._respetar_pausa()
             try:
-                resp = self.modelo.generate_content(prompt)
+                if self._cliente is not None:
+                    resp = self._cliente.models.generate_content(
+                        model=self.modelo_nombre, contents=prompt,
+                        config=genai_types.GenerateContentConfig(system_instruction=self._system))
+                else:
+                    resp = self.modelo.generate_content(prompt)
                 self._ultima_llamada_ts = time.time()
-                return resp.text.strip()
+                texto = (getattr(resp, "text", None) or "").strip()
+                if not texto:
+                    raise RuntimeError("Gemini devolvió una respuesta vacía (posible bloqueo de seguridad "
+                                       "o límite de tokens). Intente de nuevo.")
+                return texto
             except Exception as e:
                 self._ultima_llamada_ts = time.time()
                 mensaje = str(e)
-                if "429" in mensaje or "quota" in mensaje.lower() or "rate" in mensaje.lower():
+                if any(t in mensaje.lower() for t in ("429", "quota", "rate", "resource_exhausted",
+                                                         "503", "unavailable", "overloaded")):
                     if intento < reintentos:
                         m = re.search(r"retry.*?(\d+)\s*s", mensaje)
                         espera = int(m.group(1)) + 2 if m else 30

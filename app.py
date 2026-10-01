@@ -133,9 +133,17 @@ def guardar_config(cfg):
 
 
 # ============ IA ============
+def clave_gemini_secrets() -> str:
+    """Clave guardada en los Secrets de Streamlit Cloud (permanente y fuera del repo)."""
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def obtener_cliente_ia():
     cfg = cargar_config()
-    api_key = cfg.get("gemini_api_key", "").strip()
+    api_key = clave_gemini_secrets() or cfg.get("gemini_api_key", "").strip()
     if not api_key:
         return None
     modelo = cfg.get("modelo", MODELO_DEFAULT)
@@ -280,10 +288,13 @@ with st.sidebar:
     )
     st.markdown("---")
     cfg = cargar_config()
-    if cfg.get("gemini_api_key"):
-        st.success("🤖 IA configurada")
+    if clave_gemini_secrets():
+        st.success(f"🤖 Gemini conectado · {cfg.get('modelo', MODELO_DEFAULT)} (clave en Secrets)")
+    elif cfg.get("gemini_api_key"):
+        st.success(f"🤖 Gemini configurado · {cfg.get('modelo', MODELO_DEFAULT)}")
+        st.caption("⚠️ Clave temporal: se borra al reiniciar. Guárdela en Secrets.")
     else:
-        st.warning("⚠️ IA sin configurar")
+        st.warning("⚠️ IA sin configurar → «🤖 Configurar IA»")
     st.caption("Datos guardados en `data/`.")
 
 
@@ -1522,9 +1533,17 @@ def seccion_configurar_ia():
     st.header("🤖 Configurar IA (Gemini)")
 
     if not GEMINI_DISPONIBLE:
-        st.error("⚠️ La librería `google-generativeai` no está instalada.")
-        st.code("pip install google-generativeai")
+        st.error("⚠️ La librería de Gemini no está instalada.")
+        st.code("pip install google-genai")
         return
+
+    if clave_gemini_secrets():
+        st.success("🔒 La clave de Gemini está guardada en los **Secrets de Streamlit** "
+                    "(permanente). No necesita escribirla aquí; use «Probar conexión».")
+    else:
+        st.info("💡 Para que la clave **no se borre** cuando la app se reinicie, guárdela en "
+                "Streamlit Cloud → *Settings* → *Secrets* como:\n\n"
+                "`GEMINI_API_KEY = \"AIza...\"`\n\nTambién puede pegarla abajo (se pierde al reiniciar).")
 
     st.markdown("""
 ### Cómo obtener tu API key (2 minutos, gratis)
@@ -1565,11 +1584,12 @@ def seccion_configurar_ia():
         st.rerun()
 
     if probar_btn:
-        if not api_key.strip():
+        clave_prueba = api_key.strip() or clave_gemini_secrets()
+        if not clave_prueba:
             st.error("Ingresa una API key primero.")
         else:
             try:
-                cli = GeminiCliente(api_key.strip(), modelo=modelo)
+                cli = GeminiCliente(clave_prueba, modelo=modelo)
                 resp = cli._llamar("Responde solo con: FUNCIONA")
                 if "FUNCIONA" in resp.upper():
                     st.success(f"✅ Conexión OK. Modelo: {modelo}.")
