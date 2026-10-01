@@ -46,6 +46,7 @@ from generadores.disenos_curriculares import (
     buscar_competencia_por_codigo,
 )
 from generadores.ia import (
+    problemas_voc,
     GeminiCliente, GEMINI_DISPONIBLE,
     PROMPTS_DEFAULT, cargar_prompts, guardar_prompts, restablecer_prompt,
 )
@@ -2402,6 +2403,12 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
                         va[campo] = st.text_area(etiqueta, height=alto,
                                                  key=_init_estado(f"pln_r_{i}_{j}_{a}_{campo}",
                                                                   str(pa.get(campo, ""))))
+                        if campo == "actividades_aprendizaje" and va[campo].strip():
+                            ctx_txt = " ".join(str(contexto.get(k, "")) for k in
+                                               ("programa", "proyecto_formativo", "actividad_proyecto"))
+                            fallas = problemas_voc(va[campo], ctx_txt + " " + rap)
+                            if fallas:
+                                st.caption("⚠️ V+O+C: " + "; ".join(fallas))
                 h1, h2, h3, h4 = st.columns(4)
                 with h1:
                     hd = st.number_input("Horas directas", 0, 1000, key=_init_estado(

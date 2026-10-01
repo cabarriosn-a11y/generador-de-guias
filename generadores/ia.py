@@ -161,7 +161,7 @@ FORMATO EXACTO DEL JSON A DEVOLVER (todos los campos son OBLIGATORIOS y deben te
   "saberes_conceptos": "3-5 conceptos y principios que el aprendiz debe saber, separados por comas. Ejemplo: 'Fuerza, masa, peso, fricción, Leyes de Newton, Sistema Internacional de Unidades'",
   "saberes_proceso": "3-5 habilidades y procesos que el aprendiz debe saber HACER, separadas por comas. Ejemplo: 'Identificar principios físicos en operaciones logísticas, aplicar fórmulas F=m·a, analizar cambios físicos en procesos productivos'",
   "criterios_evaluacion": "3-5 criterios de evaluación concretos y medibles. Cada criterio empieza con verbo en tercera persona. Ejemplo: 'Identifica principios físicos en situaciones reales del sector productivo. Resuelve ejercicios cuantitativos aplicando F=m·a con procedimiento y unidades correctas. Propone acciones de mejora aplicables al contexto del proyecto formativo'",
-  "actividades_aprendizaje": "Nombre de las actividades de aprendizaje concretas que se desarrollarán. Ejemplo: 'Guía S1 RA-01: Leyes de Newton en logística minera, Quiz interactivo V/F con retroalimentación, Simulador PhET Fuerzas y Movimiento, Video experimental casero'",
+  "actividades_aprendizaje": "UNA oración V+O+C: verbo en infinitivo + objeto + condición (15 a 35 palabras).",
   "descripcion_evidencia": "Descripción concreta de las evidencias que produce el aprendiz. Ejemplo: 'Guía autónoma resuelta con procedimiento completo, quiz completado con puntaje mínimo del 80%, video experimental de 3-5 minutos, propuesta escrita de mejora aplicable al contexto RA-04'",
   "estrategias_didacticas": "Estrategias didácticas activas. Ejemplo: 'Aprendizaje Basado en Problemas (ABP), simulación PhET, exposición dialogada, aprendizaje experiencial'",
   "ambiente": "Polivalente",
@@ -237,6 +237,45 @@ def solo_consumibles(texto: str) -> str:
     return ", ".join(ok)
 
 
+EMPRESAS_EXTERNAS = ("cerrejón", "cerrejon", "carbones del", "drummond", "ecopetrol", "puerto brisa",
+                     "empresas mineras", "empresa minera", "sector minero")
+
+
+def problemas_voc(texto: str, contexto: str = "") -> list:
+    """Revisa que una actividad de aprendizaje cumpla V+O+C (GFPI-G-060) y no traiga
+    empresas que no estén en el programa / proyecto formativo."""
+    t = str(texto or "").strip()
+    probs = []
+    if not t:
+        return ["vacía"]
+    palabras = t.split()
+    primera = re.sub(r"[^a-záéíóúñ]", "", palabras[0].lower())
+    if not re.search(r"(ar|er|ir)$", primera):
+        probs.append("no inicia con verbo en infinitivo")
+    if len(palabras) > 40:
+        probs.append(f"muy larga ({len(palabras)} palabras; máximo 40)")
+    if len([x for x in re.split(r"(?<=[.!?])\s+", t) if x.strip()]) > 1:
+        probs.append("tiene más de una oración")
+    if re.search(r"\busted\b|\bustedes\b|\btú\b", t.lower()):
+        probs.append("habla al aprendiz (usted/tú)")
+    ctx = str(contexto or "").lower()
+    for e in EMPRESAS_EXTERNAS:
+        if e in t.lower() and e not in ctx:
+            probs.append(f"menciona «{e}», que no está en el programa ni en el proyecto")
+    return probs
+
+
+def recortar_voc(texto: str, contexto: str = "") -> str:
+    """Último recurso: primera oración, sin los incisos que nombran empresas ajenas al
+    programa/proyecto y con máximo ~40 palabras (cortando en una coma)."""
+    t = re.split(r"(?<=[.!?])\s+", str(texto or "").strip())[0].rstrip(". ")
+    ctx = str(contexto or "").lower()
+    partes = [x for x in t.split(",") if not any(e in x.lower() and e not in ctx for e in EMPRESAS_EXTERNAS)]
+    t = ",".join(partes).strip(" ,")
+    while len(t.split()) > 40 and "," in t:
+        t = t.rsplit(",", 1)[0]
+    return t.strip(" ,") + "."
+
 # ============ GESTIÓN DE PROMPTS PERSONALIZADOS ============
 _MARCAS_PROMPT_VIEJO = ("como anclaje real", "ProfeNaturales SENA")
 
@@ -248,6 +287,11 @@ def cargar_prompts(prompts_file: Path) -> dict:
             # el prompt de sistema anterior anclaba todo a una empresa: se reemplaza por el nuevo
             if any(m in str(custom.get("system", "")) for m in _MARCAS_PROMPT_VIEJO):
                 custom.pop("system", None)
+            # La página de prompts guarda TODO el diccionario: así quedaban congeladas versiones
+            # viejas (párrafos largos, empresa fija). Para planeación se exige la versión V+O+C.
+            for clave in ("system", "planeacion_rap", "planeacion"):
+                if clave in custom and "V+O+C" not in str(custom[clave]):
+                    custom.pop(clave, None)
             return {**PROMPTS_DEFAULT, **custom}
         except Exception:
             pass
@@ -538,6 +582,29 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
         if not isinstance(res, dict):
             raise RuntimeError("La IA no devolvió un objeto JSON.")
 
+        contexto_txt = " ".join(str(datos.get(k, "")) for k in
+                                ("programa", "proyecto_formativo", "actividad_proyecto", "competencia", "rap"))
+        def _fallas(r):
+            aas = r.get("actividades") if isinstance(r.get("actividades"), list) else [r]
+            out = []
+            for n, a in enumerate(aas, 1):
+                if isinstance(a, dict):
+                    out += [f"actividad {n}: {p}" for p in problemas_voc(a.get("actividades_aprendizaje", ""), contexto_txt)]
+            return out
+        fallas = _fallas(res)
+        if fallas:                                   # 1 reintento diciéndole exactamente qué corregir
+            correccion = (prompt + "\n\nTU RESPUESTA ANTERIOR NO CUMPLE:\n- " + "\n- ".join(fallas) +
+                          "\nCorrige: cada actividad de aprendizaje es UNA sola oración V+O+C (verbo en "
+                          "infinitivo + objeto + condición), máximo 35 palabras, sin hablarle al aprendiz y "
+                          "sin empresas que no estén en el programa o en el proyecto formativo. "
+                          "Devuelve el JSON completo otra vez.")
+            try:
+                res2 = self._parsear_json(self._llamar(correccion))
+                if isinstance(res2, dict) and len(_fallas(res2)) < len(fallas):
+                    res = res2
+            except Exception:
+                pass
+
         pares = (("saberes_conceptos", of_c), ("saberes_proceso", of_p), ("criterios_evaluacion", of_cr))
         for campo, oficial in pares:
             items = res.get(campo) or []
@@ -564,6 +631,8 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
             limpio.append({c: ("\n".join(a.get(c)) if isinstance(a.get(c), list)
                                else str(a.get(c) or "").strip()) for c in campos_aa})
         for a in limpio:
+            if problemas_voc(a.get("actividades_aprendizaje", ""), contexto_txt):
+                a["actividades_aprendizaje"] = recortar_voc(a.get("actividades_aprendizaje", ""), contexto_txt)
             a["ambiente"] = ""                       # lo define el instructor (Polivalente)
             a["materiales"] = solo_consumibles(a.get("materiales", ""))
         n_aa = max(1, int(datos.get("n_aa", 1) or 1))
