@@ -21,6 +21,31 @@ import pandas as pd
 import requests
 import streamlit as st
 
+
+def _recargar_modulos_actualizados():
+    """Streamlit Cloud, al recibir un push, vuelve a correr app.py pero deja en memoria las
+    versiones VIEJAS de generadores/*.py; si app.py usa una función nueva, falla con
+    ImportError. Aquí se recargan los módulos cuyo archivo cambió desde que se importaron."""
+    import importlib
+    import sys
+    for nombre, mod in list(sys.modules.items()):
+        if not nombre.startswith("generadores") or not getattr(mod, "__file__", None):
+            continue
+        try:
+            mtime = Path(mod.__file__).stat().st_mtime
+        except OSError:
+            continue
+        if getattr(mod, "_mtime_cargado", None) not in (None, mtime) or \
+                (getattr(mod, "_mtime_cargado", None) is None and nombre != "generadores"):
+            try:
+                importlib.reload(mod)
+            except Exception:
+                pass
+        mod._mtime_cargado = mtime
+
+
+_recargar_modulos_actualizados()
+
 from generadores.guia_aprendizaje import generar_guia_aprendizaje
 from generadores.guia_instructor import generar_guia_instructor
 from generadores.rubricas import generar_rubricas
