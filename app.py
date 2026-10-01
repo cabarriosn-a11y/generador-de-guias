@@ -1675,88 +1675,23 @@ def seccion_planeacion_pedagogica():
     st.caption("Genera el formato oficial de planeación por fase del proyecto formativo. "
                "Cada fase puede contener múltiples competencias.")
 
-    # ---- Cargar desde Proyecto Formativo (opcional) ----
+    # ---- Cargar desde Proyecto Formativo: POR COMPETENCIA (recomendado) o por fase ----
     proyectos_disponibles = cargar_proyectos(PROYECTOS_FILE)
     if proyectos_disponibles:
-        with st.expander("📄 Cargar datos desde Proyecto Formativo (opcional)", expanded=False):
-            st.caption("Selecciona un proyecto formativo para autocompletar datos generales "
-                       "y también generar automáticamente las filas por competencia de la fase.")
-            proyectos_lista = ["— Ninguno —"] + [
+        with st.expander("📄 Cargar desde Proyecto Formativo", expanded=not st.session_state.get("planeacion_filas")):
+            proyectos_lista = [
                 f"[{p.get('codigo_proyecto_sofia', '?')}] {p.get('programa_formacion', '')[:60]}"
                 for p in proyectos_disponibles
             ]
             idx_p = st.selectbox("Proyecto formativo", list(range(len(proyectos_lista))),
-                                  format_func=lambda i: proyectos_lista[i], key="pln_proy_sel")
-            if idx_p > 0:
-                proy_sel = proyectos_disponibles[idx_p - 1]
-
-                fases_disponibles = ["— Ninguna —"] + [f["nombre"] for f in proy_sel.get("fases", [])]
-                idx_f = st.selectbox("Fase a autocompletar", list(range(len(fases_disponibles))),
-                                      format_func=lambda i: fases_disponibles[i], key="pln_fase_sel")
-
-                if idx_f > 0:
-                    fase_sel = proy_sel["fases"][idx_f - 1]
-                    total_comp = sum(len(a.get("competencias", []))
-                                     for a in fase_sel.get("actividades", []))
-                    st.info(f"Al aplicar, se autocompletan los datos generales del proyecto y se "
-                            f"generarán **{total_comp} filas** (una por competencia de la fase).")
-
-                    if st.button("✅ Aplicar y generar filas automáticas",
-                                 type="primary", use_container_width=True):
-                        # Autocompletar datos generales
-                        st.session_state.plan_programa = proy_sel.get("programa_formacion", "")
-                        st.session_state.plan_cod_prog = f"{proy_sel.get('codigo_programa_sofia', '')} - Versión {proy_sel.get('version_programa', '1')}"
-                        st.session_state.plan_proy = proy_sel.get("nombre_proyecto", "")
-                        st.session_state.plan_cod_proy = proy_sel.get("codigo_proyecto_sofia", "")
-                        # Generar filas
-                        nuevas_filas = []
-                        for act in fase_sel.get("actividades", []):
-                            for comp in act.get("competencias", []):
-                                raps_texto = "\n".join(
-                                    f"{r['codigo']} - {r['nombre']}" for r in comp.get("raps", [])
-                                )
-                                nuevas_filas.append({
-                                    "fase": fase_sel["nombre"],
-                                    "actividad_proyecto": act["nombre"],
-                                    "competencia": f"{comp['codigo']} - {comp['nombre']}",
-                                    "raps": raps_texto,
-                                    "saberes_conceptos": "",
-                                    "saberes_proceso": "",
-                                    "criterios_evaluacion": "",
-                                    "actividades_aprendizaje": "",
-                                    "horas_directas": 48,
-                                    "horas_independientes": 48,
-                                    "descripcion_evidencia": "",
-                                    "estrategias_didacticas": "",
-                                    "ambiente": "",
-                                    "materiales": "",
-                                    "instructores": "",
-                                    "observaciones": "",
-                                    "modo_rap": True,
-                                    "raps_detalle": [],
-                                })
-                        # Limpiar TODAS las session_state keys de widgets de filas viejas
-                        # para que los widgets se recreen con los valores de las nuevas filas
-                        prefijos_widgets = (
-                            "pln_fase_", "pln_act_", "pln_comp_", "pln_raps_",
-                            "pln_hd_", "pln_hi_",
-                            "pln_saberes_conceptos_", "pln_saberes_proceso_",
-                            "pln_criterios_evaluacion_", "pln_actividades_aprendizaje_",
-                            "pln_descripcion_evidencia_", "pln_estrategias_didacticas_",
-                            "pln_ambiente_", "pln_materiales_", "pln_ins_", "pln_obs_",
-                            "pln_r_", "pln_modo_rap_", "pln_pend_", "pln_rep_", "pln_ia_todos_",
-                        )
-                        keys_a_limpiar = [
-                            k for k in list(st.session_state.keys())
-                            if any(k.startswith(p) for p in prefijos_widgets)
-                        ]
-                        for k in keys_a_limpiar:
-                            st.session_state.pop(k, None)
-
-                        st.session_state.planeacion_filas = nuevas_filas
-                        st.success(f"✅ Datos aplicados. Se generaron {len(nuevas_filas)} filas. "
-                                   "Ahora puedes generar los campos técnicos con la IA.")
-                        st.rerun()
+                                 format_func=lambda i: proyectos_lista[i], key="pln_proy_sel")
+            proy_sel = proyectos_disponibles[idx_p]
+            modo_carga = st.radio("Planear por", ["Competencia (recomendado)", "Fase"],
+                                  horizontal=True, key="pln_modo_carga")
+            if modo_carga.startswith("Competencia"):
+                _cargar_por_competencia(proy_sel)
+            else:
+                _cargar_por_fase(proy_sel)
 
     st.subheader("1. Datos generales")
     cfg = cargar_config()
@@ -1764,29 +1699,26 @@ def seccion_planeacion_pedagogica():
     with col1:
         fecha_elab = st.date_input("Fecha de elaboración", value=date.today(),
                                     key="plan_fecha").isoformat()
-        programa = st.text_input("Denominación del Programa",
-                                  value="Técnico en Integración de Operaciones Logísticas",
-                                  key="plan_programa")
+        programa = st.text_input("Denominación del Programa", key=_init_estado(
+            "plan_programa", "Técnico en Integración de Operaciones Logísticas"))
         modalidad = st.selectbox("Modalidad", ["Presencial", "Virtual", "A distancia", "Mixta"],
                                   key="plan_modalidad")
         codigo_programa = st.text_input("Código y versión del Programa",
-                                         value="137136 - Versión 1", key="plan_cod_prog")
+                                        key=_init_estado("plan_cod_prog", "137136 - Versión 1"))
     with col2:
-        proyecto = st.text_area("Nombre del Proyecto Formativo", height=100, key="plan_proy",
-                                 value="REGISTRAR EL DESARROLLO DE LAS OPERACIONES DE TRANSPORTE, "
-                                       "ALMACENAMIENTO, DISTRIBUCIÓN, MANEJO Y CONTROL DE INVENTARIOS "
-                                       "EN EL DEPARTAMENTO DE MANTENIMIENTO DE LA EMPRESA "
-                                       "CARBONES DEL CERREJÓN LIMITED")
+        proyecto = st.text_area("Nombre del Proyecto Formativo", height=100, key=_init_estado(
+            "plan_proy", "REGISTRAR EL DESARROLLO DE LAS OPERACIONES DE TRANSPORTE, "
+                         "ALMACENAMIENTO, DISTRIBUCIÓN, MANEJO Y CONTROL DE INVENTARIOS "
+                         "EN EL DEPARTAMENTO DE MANTENIMIENTO DE LA EMPRESA "
+                         "CARBONES DEL CERREJÓN LIMITED"))
         codigo_proy = st.text_input("Código del Proyecto",
-                                     value="PF-CERREJON-2026-01", key="plan_cod_proy")
-        equipo = st.text_input("Equipo Curricular",
-                                value=cfg.get("smtp_nombre") or cfg.get("autor_default", "Carlos Barrios"),
-                                key="plan_equipo")
-        regional = st.text_input("Regional y Centro de Formación",
-                                  value="Regional Guajira - Centro Industrial y de Energías Alternativas",
-                                  key="plan_regional")
+                                    key=_init_estado("plan_cod_proy", "PF-CERREJON-2026-01"))
+        equipo = st.text_input("Equipo Curricular", key=_init_estado(
+            "plan_equipo", cfg.get("smtp_nombre") or cfg.get("autor_default", "Carlos Barrios")))
+        regional = st.text_input("Regional y Centro de Formación", key=_init_estado(
+            "plan_regional", "Regional Guajira - Centro Industrial y de Energías Alternativas"))
 
-    st.subheader("2. Filas de la tabla (una por competencia)")
+    st.subheader("2. Bloques de la planeación (competencia × fase)")
     st.caption("Cada fila es una competencia dentro de una fase. Puedes tener varias "
                "competencias en la misma fase, o repartirlas entre fases distintas. "
                "💡 Escribe un RAP por línea: al generar el Excel, cada competencia se reparte "
@@ -2130,7 +2062,8 @@ def seccion_planeacion_pedagogica():
         try:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe = re.sub(r"[^\w]", "_", programa)[:30]
-            ruta = str(PLANEACIONES_DIR / f"Planeacion_{safe}_{ts}.xlsx")
+            sufijo = st.session_state.get("planeacion_nombre", "")
+            ruta = str(PLANEACIONES_DIR / f"Planeacion_{safe}{('_' + sufijo) if sufijo else ''}_{ts}.xlsx")
             with st.spinner("Generando planeación en el formato oficial GFPI-F-134..."):
                 generar_planeacion(datos, ruta)
             st.session_state.ultimo_archivo_planeacion = ruta
@@ -2154,14 +2087,19 @@ def seccion_planeacion_pedagogica():
 
 
 # ============ PLANEACIÓN: EDITOR POR RAP (formato de referencia GFPI-F-134) ============
+# Campos propios del RAP (se combinan en el Excel sobre todas sus actividades de aprendizaje)
 CAMPOS_RAP_UI = [
-    ("saberes_conceptos", "Saberes de conceptos y principios", 120),
-    ("saberes_proceso", "Saberes de proceso", 120),
-    ("criterios_evaluacion", "Criterios de evaluación", 110),
-    ("actividades_aprendizaje", "Actividades de aprendizaje a desarrollar", 110),
-    ("descripcion_evidencia", "Descripción de la evidencia de aprendizaje", 90),
-    ("estrategias_didacticas", "Estrategias didácticas activas", 90),
+    ("saberes_conceptos", "Saberes de conceptos y principios", 110),
+    ("saberes_proceso", "Saberes de proceso", 110),
+    ("criterios_evaluacion", "Criterios de evaluación", 100),
 ]
+# Campos propios de CADA actividad de aprendizaje (AA) — cada AA es una fila del Excel
+CAMPOS_AA_UI = [
+    ("actividades_aprendizaje", "Actividad de aprendizaje a desarrollar", 100),
+    ("descripcion_evidencia", "Descripción de la evidencia de aprendizaje", 80),
+    ("estrategias_didacticas", "Estrategias didácticas activas", 80),
+]
+MAX_AA = 6
 
 
 def _init_estado(key, valor):
@@ -2173,7 +2111,7 @@ def _init_estado(key, valor):
 
 
 def _repartir_mayor_residuo(total, n):
-    """Reparte `total` horas entre `n` RAP en enteros que suman EXACTO (mayor residuo)."""
+    """Reparte `total` horas en `n` partes enteras que suman EXACTO (mayor residuo)."""
     total, n = int(total or 0), max(1, n)
     base, resto = divmod(total, n)
     return [base + (1 if k < resto else 0) for k in range(n)]
@@ -2188,6 +2126,7 @@ def _oficial_de_competencia(competencia: str) -> dict:
     return {"saberes_conceptos_oficiales": c.get("conocimientos_saber", []),
             "saberes_proceso_oficiales": c.get("conocimientos_proceso", []),
             "criterios_evaluacion_oficiales": c.get("criterios_evaluacion", []),
+            "duracion_horas": c.get("duracion_horas"),
             "_programa_oficial": oficial.get("programa", "")}
 
 
@@ -2196,19 +2135,25 @@ def _aplicar_pendientes_raps():
     IA y el reparto de horas se guardan como 'pendientes' y se aplican aquí, pre-render."""
     for k in [k for k in list(st.session_state.keys()) if k.startswith("pln_pend_rap_")]:
         p = st.session_state.pop(k)
-        for campo, _, _ in CAMPOS_RAP_UI + [("ambiente", "", 0), ("materiales", "", 0)]:
-            v = p["resultado"].get(campo)
-            if v:
-                st.session_state[f"pln_r_{p['i']}_{p['j']}_{campo}"] = str(v).strip()
+        i, j, res = p["i"], p["j"], p["resultado"]
+        for campo, _, _ in CAMPOS_RAP_UI:
+            if res.get(campo):
+                st.session_state[f"pln_r_{i}_{j}_{campo}"] = str(res[campo]).strip()
+        aas = res.get("actividades") or [res]
+        st.session_state[f"pln_r_{i}_{j}_naa"] = max(1, min(MAX_AA, len(aas)))
+        for a, aa in enumerate(aas[:MAX_AA]):
+            for campo, _, _ in CAMPOS_AA_UI + [("ambiente", "", 0), ("materiales", "", 0)]:
+                if aa.get(campo):
+                    st.session_state[f"pln_r_{i}_{j}_{a}_{campo}"] = str(aa[campo]).strip()
     for k in [k for k in list(st.session_state.keys()) if k.startswith("pln_pend_horas_")]:
         i = k.rsplit("_", 1)[1]
-        for j, (hd, hi) in enumerate(st.session_state.pop(k)):
-            st.session_state[f"pln_r_{i}_{j}_hd"] = int(hd)
-            st.session_state[f"pln_r_{i}_{j}_hi"] = int(hi)
+        for (j, a), (hd, hi) in st.session_state.pop(k).items():
+            st.session_state[f"pln_r_{i}_{j}_{a}_hd"] = int(hd)
+            st.session_state[f"pln_r_{i}_{j}_{a}_hi"] = int(hi)
 
 
-def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict) -> dict:
-    datos = {**contexto, "rap": rap, "raps": raps,
+def _ia_un_rap(cli_ia, contexto: dict, rap: str, raps: list, oficial: dict, n_aa: int = 1) -> dict:
+    datos = {**contexto, "rap": rap, "raps": raps, "n_aa": n_aa,
              **{k: v for k, v in oficial.items() if not k.startswith("_")}}
     return cli_ia.generar_planeacion_rap(datos)
 
@@ -2221,15 +2166,26 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
     previos = fila.get("raps_detalle") or []
     por_texto = {str(d.get("rap", "")).strip(): d for d in previos}
 
+    def _prev(j):
+        return por_texto.get(raps[j]) or (previos[j] if j < len(previos) else {})
+
+    def _naa(j):
+        prev = _prev(j)
+        return int(st.session_state.get(f"pln_r_{i}_{j}_naa",
+                                        len(prev.get("actividades") or []) or fila.get("aa_por_rap", 1) or 1))
+
     b1, b2 = st.columns(2)
+    total_aa = sum(_naa(j) for j in range(len(raps)))
     with b1:
         if st.button(f"⚖️ Repartir {horas_dir} h directas / {horas_ind} h independientes entre "
-                     f"{len(raps)} RAP", key=f"pln_rep_{i}", use_container_width=True,
+                     f"{total_aa} actividad(es) de aprendizaje", key=f"pln_rep_{i}",
+                     use_container_width=True,
                      help="Reparto en enteros por mayor residuo: la suma cuadra exacto. "
-                          "Luego puedes ajustar cada RAP a mano."):
-            st.session_state[f"pln_pend_horas_{i}"] = list(zip(
-                _repartir_mayor_residuo(horas_dir, len(raps)),
-                _repartir_mayor_residuo(horas_ind, len(raps))))
+                          "Luego puedes ajustar cada actividad a mano."):
+            celdas = [(j, a) for j in range(len(raps)) for a in range(_naa(j))]
+            st.session_state[f"pln_pend_horas_{i}"] = dict(zip(celdas, zip(
+                _repartir_mayor_residuo(horas_dir, len(celdas)),
+                _repartir_mayor_residuo(horas_ind, len(celdas)))))
             st.rerun()
     with b2:
         ia_todos = bool(cli_ia) and st.button("🤖 Generar TODOS los RAP con IA", key=f"pln_ia_todos_{i}",
@@ -2243,7 +2199,7 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
         barra = st.progress(0.0, text="La IA está planeando los RAP…")
         for n, j in enumerate(indices, 1):
             try:
-                res = _ia_un_rap(cli_ia, contexto, raps[j], raps, oficial)
+                res = _ia_un_rap(cli_ia, contexto, raps[j], raps, oficial, n_aa=_naa(j))
                 st.session_state[f"pln_pend_rap_{i}_{j}"] = {"i": i, "j": j, "resultado": res}
                 ok += 1
             except Exception as e:  # un RAP que falla no tumba a los demás
@@ -2273,41 +2229,202 @@ def _editor_raps_planeacion(i, fila, raps_texto, horas_dir, horas_ind, cli_ia, c
     detalle = []
     total_hd = total_hi = 0
     for j, rap in enumerate(raps):
-        prev = por_texto.get(rap) or (previos[j] if j < len(previos) else {})
-        vacio = not any(str(prev.get(c, "")).strip() for c, _, _ in CAMPOS_RAP_UI)
-        with st.expander(f"{'⚪' if vacio else '🟢'} RAP {j + 1}: {rap[:95]}", expanded=False):
-            if cli_ia and st.button("🤖 Generar este RAP con IA", key=f"pln_r_ia_{i}_{j}"):
-                _lanzar([j])
-            r1, r2 = st.columns(2)
+        prev = _prev(j)
+        prev_aas = prev.get("actividades") or ([prev] if prev else [])
+        vacio = not any(str(prev.get(c, "")).strip() for c, _, _ in CAMPOS_RAP_UI) and \
+            not any(str(a.get("actividades_aprendizaje", "")).strip() for a in prev_aas)
+        with st.expander(f"{'⚪' if vacio else '🟢'} RAP {j + 1} · {_naa(j)} AA · {rap[:90]}", expanded=False):
+            c0, c1 = st.columns([1, 2])
+            with c0:
+                naa = st.number_input("Nº de actividades de aprendizaje (filas)", 1, MAX_AA,
+                                      key=_init_estado(f"pln_r_{i}_{j}_naa", _naa(j)),
+                                      help="Cada actividad de aprendizaje es una fila del Excel. "
+                                           "El RAP, sus saberes y criterios se combinan sobre ellas.")
+            with c1:
+                if cli_ia and st.button("🤖 Generar este RAP con IA", key=f"pln_r_ia_{i}_{j}"):
+                    _lanzar([j])
+            r1, r2, r3 = st.columns(3)
             valores = {}
-            for n, (campo, etiqueta, alto) in enumerate(CAMPOS_RAP_UI):
-                with (r1 if n % 2 == 0 else r2):
+            for col, (campo, etiqueta, alto) in zip((r1, r2, r3), CAMPOS_RAP_UI):
+                with col:
                     k = _init_estado(f"pln_r_{i}_{j}_{campo}", str(prev.get(campo, "")))
                     valores[campo] = st.text_area(etiqueta, height=alto, key=k)
-            h1, h2, h3, h4 = st.columns(4)
-            with h1:
-                hd = st.number_input("Horas directas", 0, 1000,
-                                     key=_init_estado(f"pln_r_{i}_{j}_hd", int(prev.get("horas_directas") or 0)))
-            with h2:
-                hi = st.number_input("Horas independientes", 0, 1000,
-                                     key=_init_estado(f"pln_r_{i}_{j}_hi", int(prev.get("horas_independientes") or 0)))
-            with h3:
-                amb = st.text_input("Ambiente (si difiere)",
-                                    key=_init_estado(f"pln_r_{i}_{j}_ambiente", str(prev.get("ambiente", ""))))
-            with h4:
-                mat = st.text_input("Materiales (si difieren)",
-                                    key=_init_estado(f"pln_r_{i}_{j}_materiales", str(prev.get("materiales", ""))))
-        total_hd += hd
-        total_hi += hi
-        detalle.append({"rap": rap, **valores, "horas_directas": hd, "horas_independientes": hi,
-                        "ambiente": amb, "materiales": mat})
+            actividades = []
+            for a in range(int(naa)):
+                pa = prev_aas[a] if a < len(prev_aas) else {}
+                st.markdown(f"**AA {a + 1}**" + (f" de {int(naa)}" if naa > 1 else ""))
+                a1, a2, a3 = st.columns(3)
+                va = {}
+                for col, (campo, etiqueta, alto) in zip((a1, a2, a3), CAMPOS_AA_UI):
+                    with col:
+                        va[campo] = st.text_area(etiqueta, height=alto,
+                                                 key=_init_estado(f"pln_r_{i}_{j}_{a}_{campo}",
+                                                                  str(pa.get(campo, ""))))
+                h1, h2, h3, h4 = st.columns(4)
+                with h1:
+                    hd = st.number_input("Horas directas", 0, 1000, key=_init_estado(
+                        f"pln_r_{i}_{j}_{a}_hd", int(pa.get("horas_directas") or 0)))
+                with h2:
+                    hi = st.number_input("Horas independientes", 0, 1000, key=_init_estado(
+                        f"pln_r_{i}_{j}_{a}_hi", int(pa.get("horas_independientes") or 0)))
+                with h3:
+                    amb = st.text_input("Ambiente (si difiere)", key=_init_estado(
+                        f"pln_r_{i}_{j}_{a}_ambiente", str(pa.get("ambiente", ""))))
+                with h4:
+                    mat = st.text_input("Materiales (si difieren)", key=_init_estado(
+                        f"pln_r_{i}_{j}_{a}_materiales", str(pa.get("materiales", ""))))
+                total_hd += hd
+                total_hi += hi
+                actividades.append({**va, "horas_directas": hd, "horas_independientes": hi,
+                                    "ambiente": amb, "materiales": mat})
+        detalle.append({"rap": rap, **valores, "actividades": actividades})
 
     cuadra = (total_hd, total_hi) == (int(horas_dir), int(horas_ind))
     (st.caption if cuadra else st.warning)(
-        f"⏱️ Suma RAP: {total_hd} h directas + {total_hi} h independientes = {total_hd + total_hi} h "
-        + ("✅ cuadra con el total de la competencia." if cuadra else
+        f"⏱️ Suma de las actividades: {total_hd} h directas + {total_hi} h independientes = "
+        f"{total_hd + total_hi} h "
+        + ("✅ cuadra con el total indicado." if cuadra else
            f"— el total indicado es {horas_dir} + {horas_ind} = {int(horas_dir) + int(horas_ind)} h."))
     return detalle
+
+
+# ============ PLANEACIÓN: CARGA DESDE PROYECTO FORMATIVO ============
+_PREFIJOS_WIDGETS_PLN = (
+    "pln_fase_", "pln_act_", "pln_comp_", "pln_raps_", "pln_hd_", "pln_hi_",
+    "pln_saberes_conceptos_", "pln_saberes_proceso_", "pln_criterios_evaluacion_",
+    "pln_actividades_aprendizaje_", "pln_descripcion_evidencia_", "pln_estrategias_didacticas_",
+    "pln_ambiente_", "pln_materiales_", "pln_ins_", "pln_obs_",
+    "pln_r_", "pln_modo_rap_", "pln_pend_", "pln_rep_", "pln_ia_todos_",
+)
+
+
+def _aplicar_filas_planeacion(proy, nuevas_filas, nombre_archivo=""):
+    """Autocompleta el encabezado con el proyecto y reemplaza las filas (limpiando el estado
+    de los widgets anteriores para que se recreen con los valores nuevos)."""
+    st.session_state.plan_programa = proy.get("programa_formacion", "")
+    st.session_state.plan_cod_prog = (f"{proy.get('codigo_programa_sofia', '')} - Versión "
+                                      f"{proy.get('version_programa', '1')}")
+    st.session_state.plan_proy = proy.get("nombre_proyecto", "")
+    st.session_state.plan_cod_proy = proy.get("codigo_proyecto_sofia", "")
+    if proy.get("regional") or proy.get("centro_formacion"):
+        st.session_state.plan_regional = " - ".join(
+            x for x in (proy.get("regional", ""), proy.get("centro_formacion", "")) if x)
+    for k in [k for k in list(st.session_state.keys()) if k.startswith(_PREFIJOS_WIDGETS_PLN)]:
+        st.session_state.pop(k, None)
+    st.session_state.planeacion_filas = nuevas_filas
+    st.session_state.planeacion_nombre = nombre_archivo
+    st.rerun()
+
+
+def _fila_desde_proyecto(fase, actividad, comp, raps, aa_por_rap=1, hd=0, hi=0):
+    """Fila (bloque de competencia) lista para el modo por RAP, con el esqueleto de
+    actividades de aprendizaje y las horas repartidas por mayor residuo."""
+    textos = [f"{r['codigo']} - {r['nombre']}" for r in raps]
+    n = max(1, len(textos) * aa_por_rap)
+    rep_d, rep_i = _repartir_mayor_residuo(hd, n), _repartir_mayor_residuo(hi, n)
+    detalle, k = [], 0
+    for t in textos:
+        aas = []
+        for _ in range(aa_por_rap):
+            aas.append({"actividades_aprendizaje": "", "descripcion_evidencia": "",
+                        "estrategias_didacticas": "", "ambiente": "", "materiales": "",
+                        "horas_directas": rep_d[k], "horas_independientes": rep_i[k]})
+            k += 1
+        detalle.append({"rap": t, "saberes_conceptos": "", "saberes_proceso": "",
+                        "criterios_evaluacion": "", "actividades": aas})
+    return {**_fila_planeacion_vacia(), "fase": fase, "actividad_proyecto": actividad,
+            "competencia": f"{comp['codigo']} - {comp['nombre']}", "raps": "\n".join(textos),
+            "horas_directas": int(hd), "horas_independientes": int(hi), "modo_rap": True,
+            "aa_por_rap": aa_por_rap, "raps_detalle": detalle}
+
+
+def _cargar_por_competencia(proy):
+    """Planeación de UNA competencia: trae todas las fases/actividades del proyecto donde
+    aparece (si sus RAP están repartidos en varias fases, sale un bloque por fase)."""
+    # Ubicaciones de cada competencia: [(fase, actividad, comp, raps)]
+    ubic = {}
+    for f in proy.get("fases", []):
+        for a in f.get("actividades", []):
+            for c in a.get("competencias", []):
+                ubic.setdefault(c["codigo"], {"comp": c, "bloques": []})["bloques"].append(
+                    (f["nombre"], a["nombre"], c, c.get("raps", [])))
+    if not ubic:
+        st.warning("Este proyecto no tiene competencias cargadas.")
+        return
+    codigos = list(ubic.keys())
+
+    def _etq(cod):
+        u = ubic[cod]
+        nr = sum(len(b[3]) for b in u["bloques"])
+        fases = sorted({b[0] for b in u["bloques"]}, key=[b[0] for b in u["bloques"]].index)
+        return (f"{cod} · {u['comp']['nombre'][:60]} · {nr} RAP · "
+                + ("fase " + fases[0] if len(fases) == 1 else f"{len(fases)} fases: " + ", ".join(fases)))
+
+    cod = st.selectbox("Competencia", codigos, format_func=_etq, key="pln_comp_sel")
+    u = ubic[cod]
+    oficial = _oficial_de_competencia(cod)
+    dur = oficial.get("duracion_horas")
+    nr_total = sum(len(b[3]) for b in u["bloques"])
+
+    for fase, act, _, raps in u["bloques"]:
+        st.markdown(f"**{fase}** — {act[:110]}")
+        for r in raps:
+            st.caption(f"• {r['codigo']} – {r['nombre'][:140]}")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        aa_por_rap = st.number_input("Actividades de aprendizaje por RAP", 1, MAX_AA, 1,
+                                     key="pln_aa_por_rap",
+                                     help="Cada AA es una fila del Excel. Luego puede cambiarlo RAP por RAP.")
+    with c2:
+        total_h = st.number_input("Horas totales de la competencia", 0, 3000, int(dur or 0),
+                                  key=f"pln_total_h_{cod}",
+                                  help=("Tomadas del diseño curricular cargado." if dur else
+                                        "Cargue el diseño curricular para traerlas automáticamente."))
+    with c3:
+        pct_ind = st.number_input("% trabajo independiente", 0, 100, 0, key="pln_pct_ind",
+                                  help="Se reparte con mayor residuo para que la suma cuadre exacto.")
+    if not oficial:
+        st.info("ℹ️ No hay diseño curricular cargado para esta competencia: las horas y los saberes "
+                "oficiales no se pueden traer. Cárguelo en «📚 Diseños Curriculares».")
+
+    if st.button("✅ Generar planeación de esta competencia", type="primary", use_container_width=True):
+        hi_total = round(int(total_h) * int(pct_ind) / 100)
+        hd_total = int(total_h) - hi_total
+        # horas de cada bloque proporcionales a sus RAP (mayor residuo)
+        pesos = [len(b[3]) for b in u["bloques"]]
+
+        def _prop(total):
+            if not nr_total:
+                return [0] * len(pesos)
+            exactos = [total * w / nr_total for w in pesos]
+            base = [int(x) for x in exactos]
+            for idx in sorted(range(len(pesos)), key=lambda k: exactos[k] - base[k],
+                              reverse=True)[:total - sum(base)]:
+                base[idx] += 1
+            return base
+
+        hd_b, hi_b = _prop(hd_total), _prop(hi_total)
+        filas = [_fila_desde_proyecto(f, a, c, r, int(aa_por_rap), hd_b[k], hi_b[k])
+                 for k, (f, a, c, r) in enumerate(u["bloques"])]
+        _aplicar_filas_planeacion(proy, filas, nombre_archivo=cod)
+
+
+def _cargar_por_fase(proy):
+    fases = proy.get("fases", [])
+    if not fases:
+        st.warning("Este proyecto no tiene fases cargadas.")
+        return
+    idx_f = st.selectbox("Fase", list(range(len(fases))), format_func=lambda i: fases[i]["nombre"],
+                         key="pln_fase_sel")
+    fase_sel = fases[idx_f]
+    total_comp = sum(len(a.get("competencias", [])) for a in fase_sel.get("actividades", []))
+    aa_por_rap = st.number_input("Actividades de aprendizaje por RAP", 1, MAX_AA, 1, key="pln_aa_por_rap_f")
+    st.info(f"Se generarán **{total_comp} bloques** (uno por competencia de la fase).")
+    if st.button("✅ Aplicar y generar filas automáticas", type="primary", use_container_width=True):
+        filas = [_fila_desde_proyecto(fase_sel["nombre"], a["nombre"], c, c.get("raps", []), int(aa_por_rap))
+                 for a in fase_sel.get("actividades", []) for c in a.get("competencias", [])]
+        _aplicar_filas_planeacion(proy, filas, nombre_archivo=re.sub(r"\W+", "_", fase_sel["nombre"])[:20])
 
 
 def _fila_planeacion_vacia():

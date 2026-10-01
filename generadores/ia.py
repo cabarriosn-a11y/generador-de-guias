@@ -183,18 +183,23 @@ Responde ÚNICAMENTE con un objeto JSON válido (sin markdown ni texto adicional
   "saberes_conceptos": ["..."],
   "saberes_proceso": ["..."],
   "criterios_evaluacion": ["..."],
-  "actividades_aprendizaje": "Un párrafo que inicia con verbo en infinitivo y describe QUÉ hace el aprendiz, CON QUÉ técnica o herramienta y PARA QUÉ producto (60-90 palabras).",
-  "descripcion_evidencia": "Inicia con 'Evidencia de Conocimiento:', 'Evidencia de Desempeño:' o 'Evidencia de Producto:' (puede combinar) y describe el entregable verificable (40-70 palabras).",
-  "estrategias_didacticas": "1 o 2 estrategias activas con el formato 'Nombre de la estrategia: cómo se aplica en esta actividad.' (ABP, estudio de caso, juego de roles, aula invertida, simulación, proyecto, etc.)",
-  "ambiente": "Ambiente tipificado SENA (p. ej. 'Polivalente', 'Sistemas', 'Laboratorio de ...').",
-  "materiales": "Materiales de formación separados por comas."
+  "actividades": [
+    {{
+      "actividades_aprendizaje": "Un párrafo que inicia con verbo en infinitivo y describe QUÉ hace el aprendiz, CON QUÉ técnica o herramienta y PARA QUÉ producto (60-90 palabras).",
+      "descripcion_evidencia": "Inicia con 'Evidencia de Conocimiento:', 'Evidencia de Desempeño:' o 'Evidencia de Producto:' (puede combinar) y describe el entregable verificable (40-70 palabras).",
+      "estrategias_didacticas": "1 o 2 estrategias activas con el formato 'Nombre de la estrategia: cómo se aplica en esta actividad.' (ABP, estudio de caso, juego de roles, aula invertida, simulación, proyecto, etc.)",
+      "ambiente": "Ambiente tipificado SENA (p. ej. 'Polivalente', 'Sistemas', 'Laboratorio de ...').",
+      "materiales": "Materiales de formación separados por comas."
+    }}
+  ]
 }}
 
 REGLAS:
 1. {regla_saberes}
 2. La actividad y la evidencia deben desarrollar SOLO este RAP y ser coherentes con la actividad del proyecto.
 3. Contextualiza al sector del programa y a La Guajira (Colombia) cuando aplique; no inventes empresas ficticias.
-4. No incluyas horas: el instructor las asigna manualmente."""
+4. No incluyas horas: el instructor las asigna manualmente.
+5. "actividades" debe tener EXACTAMENTE {n_aa} actividad(es) de aprendizaje para este RAP. Si son varias, deben ser distintas y progresivas (de la apropiación a la aplicación) y cada una con su propia evidencia."""
 
 
 PROMPTS_DEFAULT = {
@@ -443,7 +448,8 @@ class GeminiCliente:
             programa=datos.get("programa", ""), proyecto_formativo=datos.get("proyecto_formativo", ""),
             fase=datos.get("fase", ""), actividad_proyecto=datos.get("actividad_proyecto", ""),
             competencia=datos.get("competencia", ""), rap=datos.get("rap", ""),
-            otros_raps="; ".join(otros) or "(ninguno)", bloque_oficial=bloque, regla_saberes=regla)
+            otros_raps="; ".join(otros) or "(ninguno)", bloque_oficial=bloque, regla_saberes=regla,
+            n_aa=max(1, int(datos.get("n_aa", 1) or 1)))
         prompt = self._aplicar_extra(prompt, instrucciones_extra)
         res = self._parsear_json(self._llamar(prompt))
         if not isinstance(res, dict):
@@ -458,10 +464,23 @@ class GeminiCliente:
             if oficial:
                 items = self._filtrar_verbatim(items, oficial)
             res[campo] = "\n\n".join(items)
-        for campo in ("actividades_aprendizaje", "descripcion_evidencia", "estrategias_didacticas",
-                      "ambiente", "materiales"):
-            v = res.get(campo, "")
-            res[campo] = "\n".join(v) if isinstance(v, list) else str(v or "").strip()
+        # Actividades de aprendizaje (1..N por RAP). Acepta también el formato plano anterior.
+        campos_aa = ("actividades_aprendizaje", "descripcion_evidencia", "estrategias_didacticas",
+                     "ambiente", "materiales")
+        aas = res.get("actividades")
+        if not isinstance(aas, list) or not aas:
+            aas = [{c: res.get(c, "") for c in campos_aa}]
+        limpio = []
+        for a in aas:
+            if not isinstance(a, dict):
+                a = {"actividades_aprendizaje": str(a)}
+            limpio.append({c: ("\n".join(a.get(c)) if isinstance(a.get(c), list)
+                               else str(a.get(c) or "").strip()) for c in campos_aa})
+        n_aa = max(1, int(datos.get("n_aa", 1) or 1))
+        limpio = (limpio + [dict.fromkeys(campos_aa, "") for _ in range(n_aa)])[:n_aa]
+        res["actividades"] = limpio
+        for c in campos_aa:                      # compatibilidad: la 1.ª AA también en plano
+            res[c] = limpio[0][c]
         res["_oficial"] = hay_oficial
         return res
 

@@ -158,9 +158,17 @@ def _serial_excel(fecha) -> int | str:
 
 
 # ─────────────────────────────── expansión por RAP ───────────────────────────────
+CAMPOS_RAP = [CAMPOS[c] for c in "EFG"]              # saberes y criterios: propios del RAP
+CAMPOS_AA = [CAMPOS[c] for c in "HIJKLMNOP"]         # propios de cada actividad de aprendizaje
+
+
 def expandir_filas(filas: list[dict]) -> list[dict]:
-    """1 competencia → N registros (uno por RAP). Cada registro lleva: bloque, modo, y
-    todos los campos A–P ya resueltos (herencia competencia → RAP)."""
+    """1 competencia → N RAP → M actividades de aprendizaje (AA). Cada AA es UNA fila de Excel.
+
+    Modo por RAP (recomendado): `raps_detalle[j]` puede traer `actividades` (lista de AA);
+    si no la trae, el propio RAP cuenta como una AA (1 AA por RAP, compatible con lo anterior).
+    Herencia de valores vacíos: AA → RAP → competencia.
+    Modo heredado: `raps` (1 por línea) y todo lo demás a nivel competencia."""
     salida = []
     for b, comp in enumerate(filas or []):
         detalle = comp.get("raps_detalle") or []
@@ -171,25 +179,29 @@ def expandir_filas(filas: list[dict]) -> list[dict]:
             modo = "heredado"
             lista = [r.strip() for r in _txt(comp.get("raps")).splitlines() if r.strip()]
             raps = [{"rap": r} for r in (lista or [""])]
-        for rap in raps:
-            reg = {"_bloque": b, "_modo": modo,
-                   "fase": _txt(comp.get("fase")),
-                   "actividad_proyecto": _txt(comp.get("actividad_proyecto")),
-                   "competencia": _txt(comp.get("competencia")),
-                   "rap": _txt(rap.get("rap") or rap.get("texto") or rap.get("nombre"))}
-            for campo in CAMPOS_POR_RAP:
-                v = rap.get(campo)
-                if v in (None, "") and modo == "por_rap":
-                    v = comp.get(campo)
-                elif modo == "heredado":
-                    v = comp.get(campo)
-                reg[campo] = _num(v) if campo in NUMERICOS and v not in (None, "") else _txt(v)
-            salida.append(reg)
+        for j, rap in enumerate(raps):
+            aas = [a for a in (rap.get("actividades") or []) if isinstance(a, dict)] if modo == "por_rap" else []
+            for k, aa in enumerate(aas or [{}]):
+                reg = {"_bloque": b, "_rap": (b, j), "_aa": k, "_modo": modo,
+                       "fase": _txt(comp.get("fase")),
+                       "actividad_proyecto": _txt(comp.get("actividad_proyecto")),
+                       "competencia": _txt(comp.get("competencia")),
+                       "rap": _txt(rap.get("rap") or rap.get("texto") or rap.get("nombre"))}
+                for campo in CAMPOS_POR_RAP:
+                    if modo == "heredado":
+                        v = comp.get(campo)
+                    else:
+                        fuentes = ([aa] if campo in CAMPOS_AA else []) + [rap, comp]
+                        v = next((f.get(campo) for f in fuentes if f.get(campo) not in (None, "")), "")
+                    reg[campo] = _num(v) if campo in NUMERICOS and v not in (None, "") else _txt(v)
+                salida.append(reg)
     return salida
 
 
 def _rangos(registros: list[dict]) -> dict[str, list[tuple[int, int]]]:
-    """Rangos (índice inicio, índice fin) a combinar por columna."""
+    """Rangos (índice inicio, índice fin) a combinar por columna.
+    A/B: texto igual consecutivo · C: competencia · D–G: RAP (sobre todas sus AA) ·
+    H–P: cada AA (modo por RAP) o toda la competencia (modo heredado)."""
     n = len(registros)
     rangos: dict[str, list[tuple[int, int]]] = {c: [] for c in COLUMNAS}
 
@@ -201,18 +213,19 @@ def _rangos(registros: list[dict]) -> dict[str, list[tuple[int, int]]]:
                 ini = i
         return grupos
 
-    # A y B: texto igual consecutivo (vacíos nunca se agrupan entre sí)
     for col, campo in (("A", "fase"), ("B", "actividad_proyecto")):
         def k(i, campo=campo):
             v = registros[i][campo].strip().upper()
             return v if v else ("__vacio__", i)
         rangos[col] = agrupar(k)
-    # C: por competencia (bloque)
     rangos["C"] = agrupar(lambda i: registros[i]["_bloque"])
-    rangos["D"] = [(i, i) for i in range(n)]
-    for col in "EFGHIJKLMNOP":
-        rangos[col] = agrupar(lambda i: (registros[i]["_bloque"], "h")
-                              if registros[i]["_modo"] == "heredado" else ("r", i))
+    rangos["D"] = agrupar(lambda i: registros[i]["_rap"])
+    for col in "EFG":
+        rangos[col] = agrupar(lambda i: ("h", registros[i]["_bloque"])
+                              if registros[i]["_modo"] == "heredado" else registros[i]["_rap"])
+    for col in "HIJKLMNOP":
+        rangos[col] = agrupar(lambda i: ("h", registros[i]["_bloque"])
+                              if registros[i]["_modo"] == "heredado" else ("aa", i))
     return rangos
 
 
@@ -463,13 +476,15 @@ def generar_planeacion(datos: dict, ruta_salida: str, plantilla: str | Path | No
 
 def resumen_horas(datos: dict) -> dict:
     """Totales para validar contra la duración oficial de cada competencia."""
-    tot = {}
+    tot, vistos = {}, set()
     for reg in expandir_filas(datos.get("filas", [])):
         k = reg["competencia"][:60]
         d = reg["horas_directas"] if isinstance(reg["horas_directas"], int) else 0
         ind = reg["horas_independientes"] if isinstance(reg["horas_independientes"], int) else 0
-        if reg["_modo"] == "heredado" and k in tot:
-            continue
+        if reg["_modo"] == "heredado":          # horas a nivel competencia: contar 1 vez por bloque
+            if reg["_bloque"] in vistos:
+                continue
+            vistos.add(reg["_bloque"])
         t = tot.setdefault(k, {"directas": 0, "independientes": 0})
         t["directas"] += d
         t["independientes"] += ind
