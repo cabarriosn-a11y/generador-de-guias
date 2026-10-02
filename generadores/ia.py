@@ -750,6 +750,70 @@ REGLAS: no inventes otras evidencias; usa solo el contexto del programa y del pr
         res = self._parsear_json(self._llamar(prompt))
         return str(res.get("descripcion", "") if isinstance(res, dict) else res).strip()
 
+    # ---------- Bibliografía VERIFICADA (Gemini + búsqueda de Google) ----------
+    def buscar_bibliografia(self, ctx: dict, n: int = 6) -> list:
+        """Referentes reales sobre los TEMAS de la guía. Gemini busca en Google (grounding) y solo
+        se aceptan referencias cuyo sitio aparece entre las fuentes que Google devolvió: si la IA
+        escribe una referencia que no salió de la búsqueda, se descarta (no se inventa nada)."""
+        if self._cliente is None:
+            raise RuntimeError("La búsqueda verificada necesita el SDK google-genai (requirements.txt).")
+        temas = "; ".join((ctx.get("saberes") or [])[:15])
+        prompt = f"""Busca en Google bibliografía REAL y consultable para una guía de aprendizaje SENA.
+- Programa: {ctx.get('programa', '')}
+- Competencia: {ctx.get('competencia', '')}
+- Resultados de aprendizaje: {"; ".join(ctx.get('raps', []))}
+- Temas (saberes del diseño curricular): {temas}
+
+Prioriza: SENA (Biblioteca/Repositorio SENA), ministerios y entidades de Colombia (MinTrabajo, DIAN,
+MinTransporte, ICONTEC), universidades y libros con editorial. Devuelve {n} referencias sobre ESOS temas.
+Responde ÚNICAMENTE con JSON:
+{{"referencias": [{{"apa": "Referencia completa en APA 7 con su URL", "url": "https://...", "tema": "tema que respalda"}}]}}
+Incluye SOLO fuentes que encontraste en la búsqueda; no inventes autores, títulos ni enlaces."""
+        herramienta = genai_types.Tool(google_search=genai_types.GoogleSearch())
+        ultimo_error = None
+        for modelo in dict.fromkeys([self.modelo_nombre, *self.MODELOS_RESPALDO]):
+            try:
+                resp = self._cliente.models.generate_content(
+                    model=modelo, contents=prompt,
+                    config=genai_types.GenerateContentConfig(tools=[herramienta]))
+                break
+            except Exception as e:
+                ultimo_error = e
+                if not re.search(r"503|UNAVAILABLE|overload|404|NOT_FOUND", str(e), re.I):
+                    raise
+        else:
+            raise RuntimeError(f"Gemini no respondió: {ultimo_error}")
+        dominios = set()
+        for cand in (getattr(resp, "candidates", None) or []):
+            gm = getattr(cand, "grounding_metadata", None)
+            for ch in (getattr(gm, "grounding_chunks", None) or []):
+                web = getattr(ch, "web", None)
+                for v in (getattr(web, "title", "") or "", getattr(web, "domain", "") or ""):
+                    v = str(v).lower().strip()
+                    if "." in v and " " not in v:
+                        dominios.add(v.removeprefix("www."))
+        if not dominios:
+            raise RuntimeError("Google no devolvió fuentes para verificar; no se agregó bibliografía.")
+        try:
+            datos = self._parsear_json(getattr(resp, "text", "") or "")
+        except Exception:
+            datos = {}
+        refs = datos.get("referencias", []) if isinstance(datos, dict) else (datos or [])
+        from urllib.parse import urlparse
+        salida = []
+        for r in refs:
+            if not isinstance(r, dict):
+                continue
+            url = str(r.get("url", "")).strip()
+            host = urlparse(url).netloc.lower().removeprefix("www.")
+            if host and any(host == d or host.endswith("." + d) or d.endswith("." + host) for d in dominios):
+                apa = str(r.get("apa", "")).strip()
+                if url not in apa:
+                    apa = f"{apa} {url}".strip()
+                salida.append({"apa": apa, "url": url, "tema": str(r.get("tema", "")).strip(),
+                               "fuente": "Google (verificada)"})
+        return salida
+
     # ---------- Instrumentos de evaluación desde la guía ----------
     def generar_instrumento(self, tipo: str, item: dict, ctx: dict, n_preguntas: int = 8,
                             instrucciones_extra: str = "") -> list:

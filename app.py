@@ -2873,7 +2873,7 @@ def seccion_guia_desde_planeacion():
         bloque_competencia_completa,
         aas_por_momento, descripcion_plantilla, armar_datos_guia, validar_guia, repartir,
         saberes_sueltos, subevidencia_plantilla, descripcion_evidencia_plantilla, apropiacion_texto,
-        transferencia_evidencia_plantilla)
+        transferencia_evidencia_plantilla, horas_por_momento, HORAS_MAX, normas_del_diseno)
     st.header("📗 Guía de aprendizaje desde la planeación (GFPI-F-135)")
     st.caption("La guía hereda de la planeación la identificación, los RAP, las actividades de aprendizaje "
                "(V+O+C), las evidencias, los criterios, las horas, el ambiente y los materiales. Aquí solo "
@@ -2950,7 +2950,10 @@ def seccion_guia_desde_planeacion():
     reparto = aas_por_momento(bl)
     contexto_txt = " ".join([bl["actividad_proyecto"], " ".join(bl["raps"]),
                              " ".join(a["actividad"] for a in bl["aas"])])
-    horas_def = dict(zip(MOMENTOS, repartir(bl["horas"], [PESO_HORAS[k] for k in MOMENTOS])))
+    horas_def, horas_aa_def = horas_por_momento(bl["horas"], bl["aas"])
+    for k_, tope in HORAS_MAX.items():               # respeta los topes aunque haya un valor viejo
+        if int(st.session_state.get(f"{clave}_h_{k_}", 0) or 0) > tope:
+            st.session_state[f"{clave}_h_{k_}"] = tope
     cli_ia = obtener_cliente_ia()
     ctx_ia = {"programa": plan.get("programa", ""), "proyecto_formativo": plan.get("proyecto_formativo", ""),
               "fase": bl["fase"], "actividad_proyecto": bl["actividad_proyecto"],
@@ -3062,6 +3065,15 @@ def seccion_guia_desde_planeacion():
                 st.session_state[f"{clave}_pend_glos"] = "\n".join(f"{t} | {d}" for t, d in glos)
             except Exception as e:
                 errores.append(f"glosario: {e}")
+        if todo_ia and ("presentación" in objetivo or "bibliografía" in objetivo):
+            try:
+                barra.progress(5.5 / 6, text="Buscando bibliografía real (Google)…")
+                nuevas = cli_ia.buscar_bibliografia(ctx_ia)
+                st.session_state[f"{clave}_bib_web"] = nuevas
+                st.session_state[f"{clave}_pend_bibsel"] = (list(st.session_state.get(f"{clave}_bibsel") or [])
+                                                            + [r["apa"] for r in nuevas])
+            except Exception as e:
+                errores.append(f"bibliografía: {e}")
         st.session_state[f"{clave}_msg_todo"] = errores
         st.session_state[f"{clave}_fallidos"] = [e.split(":")[0] for e in errores]
         st.rerun()
@@ -3113,7 +3125,6 @@ def seccion_guia_desde_planeacion():
                     _tarjeta_tecnica(t, info["letra"])
             if k == "3.3":
                 apropiacion = {}
-                horas = st.number_input("Horas", 0, 2000, key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
                 st.info("Organización SENA: **3.3.1, 3.3.2…** = cada actividad de aprendizaje de la planeación "
                         "(tal cual) → su evidencia → descripción de la evidencia → sub-evidencias si algún "
                         "saber no encaja en la evidencia principal.")
@@ -3123,6 +3134,9 @@ def seccion_guia_desde_planeacion():
                         st.caption(f"🔒 **Evidencia:** {aa['evidencia'] or '—'}")
                         dev = st.text_area("Descripción de la evidencia", height=110,
                                            key=_init_estado(f"{clave}_dev_{i}", ""))
+                        h_aa = st.number_input(f"Horas de 3.3.{i + 1} (planeación: "
+                                               f"{aa['horas_directas'] + aa['horas_independientes']} h)", 0, 2000,
+                                               key=_init_estado(f"{clave}_haa_{i}", horas_aa_def[i]))
                         b1, b2 = st.columns(2)
                         if b1.button("🤖 Redactar con IA", key=f"{clave}_devia_{i}", disabled=not cli_ia,
                                      use_container_width=True):
@@ -3160,7 +3174,9 @@ def seccion_guia_desde_planeacion():
                                 st.session_state[f"{clave}_pend_sub_{i}_{j_}"] = subevidencia_plantilla(sab)
                                 st.rerun()
                             subs.append({"texto": txt, "saberes": sab})
-                        apropiacion[i] = {"desc_evidencia": dev, "subs": subs}
+                        apropiacion[i] = {"desc_evidencia": dev, "subs": subs, "horas": int(h_aa)}
+                horas = sum(a["horas"] for a in apropiacion.values())
+                st.metric("Horas de 3.3 (suma de las actividades)", f"{horas} h")
                 desc = apropiacion_texto(bl["aas"], apropiacion)
                 with st.expander("👁️ Así queda 3.3 en la guía"):
                     st.markdown(desc.replace("\n", "  \n"))
@@ -3169,7 +3185,8 @@ def seccion_guia_desde_planeacion():
                 continue
             c1, c2 = st.columns([1, 3])
             with c1:
-                horas = st.number_input("Horas", 0, 2000, key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
+                horas = st.number_input("Horas" + (f" (máx. {HORAS_MAX[k]})" if k in HORAS_MAX else ""), 0,
+                                        HORAS_MAX.get(k, 2000), key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
                 if st.button("🤖 Redactar con IA", key=f"{clave}_ia_{k}", disabled=not cli_ia,
                              use_container_width=True):
                     try:
@@ -3229,8 +3246,45 @@ def seccion_guia_desde_planeacion():
     glos_txt = st.text_area("Glosario (un término por línea: término | definición)", height=100,
                             key=_init_estado(f"{clave}_glos", ""))
     glosario = [tuple(x.split("|", 1)) for x in glos_txt.splitlines() if "|" in x]
-    refs_txt = st.text_area("Referentes bibliográficos adicionales (uno por línea, APA)", height=70,
+    # ---- Bibliografía: SOLO real y sobre los temas de la guía ----
+    st.markdown("**📚 Referentes bibliográficos** (sobre los temas de la guía; nada inventado)")
+    normas = normas_del_diseno(bl["saberes_conceptos"] + bl["saberes_proceso"] + bl["criterios"])
+    web = st.session_state.get(f"{clave}_bib_web", [])
+    candidatos = list(dict.fromkeys([r["apa"] for r in normas] + [r["apa"] for r in web]))
+    origen = {r["apa"]: r["fuente"] for r in normas + web}
+    pend = st.session_state.pop(f"{clave}_pend_bibsel", None)
+    if pend is not None:
+        st.session_state[f"{clave}_bibsel"] = [x for x in pend if x in candidatos]
+    if f"{clave}_bibsel" not in st.session_state:
+        st.session_state[f"{clave}_bibsel"] = [r["apa"] for r in normas]
+    st.session_state[f"{clave}_bibsel"] = [x for x in st.session_state[f"{clave}_bibsel"] if x in candidatos]
+    b1, b2 = st.columns([3, 1])
+    with b2:
+        if st.button("🔎 Buscar bibliografía con IA (Google)", disabled=not cli_ia, use_container_width=True,
+                     key=f"{clave}_bib_ia", help="Gemini busca en Google y SOLO se aceptan fuentes que Google "
+                                                 "devolvió de verdad. Revisa y marca las que quieras."):
+            try:
+                with st.spinner("Buscando fuentes reales sobre los temas…"):
+                    nuevas = cli_ia.buscar_bibliografia(ctx_ia)
+                st.session_state[f"{clave}_bib_web"] = nuevas
+                st.session_state[f"{clave}_pend_bibsel"] = list(st.session_state[f"{clave}_bibsel"]) + [r["apa"] for r in nuevas]
+                st.session_state[f"{clave}_bib_msg"] = f"✅ {len(nuevas)} referencia(s) verificadas con Google."
+            except Exception as e:
+                st.session_state[f"{clave}_bib_msg"] = f"⚠️ No se pudo buscar: {str(e)[:200]}"
+            st.rerun()
+    msg = st.session_state.pop(f"{clave}_bib_msg", None)
+    if msg:
+        (st.success if msg.startswith("✅") else st.warning)(msg)
+    with b1:
+        bib_sel = st.multiselect("Referentes que van en la guía", candidatos, key=f"{clave}_bibsel",
+                                 format_func=lambda x: ("📜 " if origen.get(x) == "Diseño curricular" else "🌐 ") + x[:160])
+    st.caption("📜 = norma citada en el diseño curricular · 🌐 = fuente encontrada en Google (verificada). "
+               "Abre los enlaces antes de entregar la guía.")
+    refs_txt = st.text_area("Referentes adicionales tuyos (uno por línea, APA)", height=70,
                             key=_init_estado(f"{clave}_refs", ""))
+    if st.checkbox("Incluir también el Atlas didáctico (UnADM) y la GFPI-G-060", key=f"{clave}_refs_inst"):
+        from generadores.guia_desde_planeacion import REFERENCIA_ATLAS, REFERENCIA_G060
+        refs_txt = refs_txt + "\n" + REFERENCIA_ATLAS + "\n" + REFERENCIA_G060
     cfg = cargar_config()
     a1, a2, a3 = st.columns(3)
     with a1:
@@ -3254,7 +3308,7 @@ def seccion_guia_desde_planeacion():
                 m["descripcion"] = descripcion_plantilla(k, (m.get("tecnicas") or [None])[0], bl,
                                                          reparto.get(k, []))
         datos = armar_datos_guia(plan, bl, momentos, presentacion, glosario,
-                                 [r for r in refs_txt.splitlines() if r.strip()],
+                                 list(bib_sel) + [r for r in refs_txt.splitlines() if r.strip()],
                                  {"nombre": autor, "dependencia": dependencia, "fecha": fecha},
                                  apropiacion=apropiacion, transferencia=transferencia)
         GUIAS_DIR.mkdir(parents=True, exist_ok=True)

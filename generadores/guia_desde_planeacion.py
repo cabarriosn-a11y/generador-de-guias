@@ -36,7 +36,21 @@ MOMENTOS = {
                          "que demuestre lo aprendido en el transcurso de TODA la competencia: aplicar a una "
                          "situación nueva del contexto productivo, justificar decisiones y verificar resultados."},
 }
-PESO_HORAS = {"3.1": 10, "3.2": 15, "3.3": 45, "3.4": 30}     # % sugerido; el instructor ajusta
+PESO_HORAS = {"3.1": 10, "3.2": 15, "3.3": 45, "3.4": 30}     # (antiguo; ya no se usa por defecto)
+HORAS_MAX = {"3.1": 1, "3.4": 2}          # regla SENA: reflexión máx. 1 h, transferencia máx. 2 h
+HORAS_32 = 2                              # conocimientos previos (general): sugerido, el instructor ajusta
+
+
+def horas_por_momento(total: int, aas: list) -> tuple:
+    """3.1 = 1 h, 3.2 = 2 h, 3.4 = 2 h y TODO lo demás a 3.3, repartido entre las AA según las horas
+    que cada una tiene en la planeación. Devuelve ({momento: horas}, [horas de cada AA])."""
+    total = int(total or 0)
+    h31 = min(HORAS_MAX["3.1"], total)
+    h34 = min(HORAS_MAX["3.4"], max(total - h31, 0))
+    h32 = min(HORAS_32, max(total - h31 - h34, 0))
+    h33 = max(total - h31 - h32 - h34, 0)
+    pesos = [max(int(a.get("horas_directas") or 0) + int(a.get("horas_independientes") or 0), 1) for a in aas] or [1]
+    return {"3.1": h31, "3.2": h32, "3.3": h33, "3.4": h34}, repartir(h33, pesos)
 
 REFERENCIA_ATLAS = ("Universidad Abierta y a Distancia de México. (s. f.). 100 técnicas didácticas de "
                     "enseñanza y aprendizaje. https://100tecnicasdidacticas.unadmexico.mx/")
@@ -268,15 +282,48 @@ def apropiacion_texto(aas: list, detalle: dict) -> str:
     bloques = []
     for i, aa in enumerate(aas, 1):
         d = detalle.get(i - 1, {}) if isinstance(detalle, dict) else {}
-        lineas = [f"**3.3.{i}** {aa.get('actividad', '').strip()}"]
+        lineas = [f"**3.3.{i} Actividad de aprendizaje:** {aa.get('actividad', '').strip()}"]
         if aa.get("evidencia"):
             lineas.append(f"**Evidencia:** {aa['evidencia'].strip()}")
         desc = str(d.get("desc_evidencia", "") or "").strip() or descripcion_evidencia_plantilla(aa)
         lineas.append(f"**Descripción de la evidencia:** {desc}")
         for n, t, sab in numerar_subs(i, d.get("subs") or []):
             lineas.append(f"**Sub-evidencia {n}:** {t}")
+        if d.get("horas"):
+            lineas.append(f"**Duración:** {d['horas']} horas")
         bloques.append("\n".join(lineas))
-    return "\n".join(bloques)
+    return "\n" + "\n".join(bloques)        # 3.3.1 empieza en su propio párrafo, debajo del rótulo
+
+
+# ─────────────────────────────── bibliografía real desde el diseño ───────────────────────────────
+_RE_NORMA = re.compile(r"\b(LEY|RESOLUCI[OÓ]N|DECRETO|NTC|GTC|ISO|CIRCULAR)\s*(?:N[°º.O]*\s*)?"
+                       r"(\d[\d.\-:]*)(?:\s*(?:/|DE|DEL)\s*(\d{4}))?", re.I)
+_EMISOR = {"NTC": "Instituto Colombiano de Normas Técnicas y Certificación [ICONTEC]",
+           "GTC": "Instituto Colombiano de Normas Técnicas y Certificación [ICONTEC]",
+           "ISO": "Organización Internacional de Normalización [ISO]"}
+
+
+def normas_del_diseno(textos: list) -> list:
+    """Leyes, resoluciones, decretos y normas técnicas que el DISEÑO CURRICULAR cita en los saberes.
+    Son reales porque vienen del propio diseño; se devuelven como referentes (APA simplificado)."""
+    vistas, refs = set(), []
+    for t in textos:
+        for m in _RE_NORMA.finditer(str(t)):
+            tipo = m.group(1).upper().replace("RESOLUCION", "RESOLUCIÓN")
+            num, anio = m.group(2).strip(".-:"), m.group(3)
+            if tipo in ("ISO",) and ":" in num:
+                num, anio = num.split(":")[0], anio or num.split(":")[1]
+            clave = (tipo, num)
+            if clave in vistas or len(num) < 2:
+                continue
+            vistas.add(clave)
+            nombre = tipo.capitalize() if tipo not in _EMISOR else tipo
+            fecha = anio or "s. f."
+            emisor = _EMISOR.get(tipo, "Colombia")
+            titulo = f"{nombre} {num}" + (f" de {anio}" if anio and tipo not in _EMISOR else (f":{anio}" if anio else ""))
+            refs.append({"apa": f"{emisor}. ({fecha}). {titulo}.", "url": "", "tema": t[:80],
+                         "fuente": "Diseño curricular"})
+    return refs
 
 
 def transferencia_evidencia_plantilla(tecnica: dict | None) -> str:
@@ -383,11 +430,7 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
                   transferencia["evidencia"], "\n".join(transferencia["criterios"]),
                   instrumento_para(transferencia["evidencia"])])
 
-    refs = list(referentes or [])
-    usadas = any(m.get("tecnicas") for m in momentos.values())
-    for r in ([REFERENCIA_ATLAS] if usadas else []) + [REFERENCIA_G060]:
-        if r not in refs:
-            refs.append(r)
+    refs = list(dict.fromkeys(r for r in (referentes or []) if str(r).strip()))
 
     cod = plan.get("codigo_programa", "")
     return {
@@ -427,6 +470,10 @@ def validar_guia(bl: dict, momentos: dict) -> list:
     suma = sum(int(momentos.get(k, {}).get("horas") or 0) for k in MOMENTOS)
     if suma != bl["horas"]:
         avisos.append(f"Las horas de los momentos suman {suma} h y la planeación asigna {bl['horas']} h.")
+    for k, tope in HORAS_MAX.items():
+        if int(momentos.get(k, {}).get("horas") or 0) > tope:
+            avisos.append(f"{k} {MOMENTOS[k]['nombre']}: máximo {tope} h (lleva "
+                          f"{momentos[k]['horas']} h). El fuerte es 3.3.")
     for k, info in MOMENTOS.items():
         m = momentos.get(k, {})
         if not str(m.get("descripcion", "")).strip():
