@@ -3238,6 +3238,11 @@ def seccion_instrumentos_evaluacion():
     if not items:
         st.warning("La guía no tiene evidencias en la tabla 4.")
         return
+    from generadores.instrumentos import REGIONAL_CENTRO_DEFECTO
+    guia = dict(guia)
+    guia["_regional_centro"] = st.text_input(
+        "Regional y Centro de Formación (encabezado con logo SENA)",
+        key=_init_estado(f"ins_{gid}_regional", guia.get("_regional_centro") or REGIONAL_CENTRO_DEFECTO))
     n_aa = len({it["aa"] for it in items})
     st.markdown(f"**{guia.get('competencia', '')[:120]}** · {n_aa} actividad(es) de aprendizaje · "
                 f"{len(items)} evidencia(s) · todas llevan instrumento")

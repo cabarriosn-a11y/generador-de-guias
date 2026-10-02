@@ -13,6 +13,7 @@ gráfica LogiLab SENA (verde #39A900). El juicio es SENA: Aprobado / No aprobado
 from __future__ import annotations
 
 import re
+from pathlib import Path
 import unicodedata
 
 from docx import Document
@@ -362,6 +363,55 @@ def _juicio(doc, regla):
     _anchos(f, [12.15, 12.15])
 
 
+LOGO = Path(__file__).resolve().parent.parent / "templates" / "logo_sena.png"
+REGIONAL_CENTRO_DEFECTO = "Regional Guajira - Centro Industrial y de Energías Alternativas"
+
+
+def regional_y_centro(texto: str) -> tuple[str, str]:
+    """'Regional Guajira - Centro Industrial…' → ('Regional Guajira', 'Centro Industrial…')."""
+    partes = [x.strip() for x in re.split(r"\s+[-–·|]\s+|\n", str(texto or "")) if x.strip()]
+    reg = next((x for x in partes if _norm(x).startswith("regional")), "")
+    cen = next((x for x in partes if _norm(x).startswith("centro")), "")
+    resto = [x for x in partes if x not in (reg, cen)]
+    if not reg and resto:
+        reg = resto.pop(0)
+    if not cen and resto:
+        cen = resto.pop(0)
+    return reg, cen
+
+
+def _encabezado(doc, guia):
+    """Encabezado en todas las páginas: logo SENA + regional + centro + programa."""
+    reg, cen = regional_y_centro(guia.get("_regional_centro") or REGIONAL_CENTRO_DEFECTO)
+    for s in doc.sections:
+        s.header_distance = Cm(0.8)
+        h = s.header
+        h.paragraphs[0].text = ""
+        t = h.add_table(rows=1, cols=2, width=Cm(24.3))
+        _bordes(t, "FFFFFF")
+        c0, c1 = t.cell(0, 0), t.cell(0, 1)
+        if LOGO.exists():
+            c0.paragraphs[0].add_run().add_picture(str(LOGO), height=Cm(1.6))
+        c0.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        lineas = [("SERVICIO NACIONAL DE APRENDIZAJE · SENA", True, 10),
+                  (" · ".join(x for x in (reg, cen) if x), True, 9),
+                  (f"{guia.get('programa', '')}" + (f" · Código {guia['codigo_programa']}" if guia.get("codigo_programa") else ""), False, 8.5),
+                  ("Instrumentos de evaluación · Sistema de Gestión de la Formación Profesional Integral", False, 8)]
+        c1.text = ""
+        for k, (txt, neg, tam) in enumerate(lineas):
+            par = c1.paragraphs[0] if k == 0 else c1.add_paragraph()
+            par.paragraph_format.space_after = Pt(0)
+            r = par.add_run(txt); r.bold = neg; r.font.size = Pt(tam)
+            if k < 2:
+                r.font.color.rgb = RGBColor(0x39, 0xA9, 0x00) if k == 0 else OSCURO
+        _anchos(t, [2.6, 21.7])
+        linea = h.add_paragraph()
+        pPr = linea._p.get_or_add_pPr()
+        bdr = OxmlElement("w:pBdr"); b = OxmlElement("w:bottom")
+        b.set(qn("w:val"), "single"); b.set(qn("w:sz"), "12"); b.set(qn("w:color"), VERDE)
+        bdr.append(b); pPr.append(bdr)
+
+
 def _pie(doc):
     for s in doc.sections:
         p = s.footer.paragraphs[0]
@@ -384,6 +434,8 @@ def generar_instrumentos_docx(guia: dict, instrumentos: list[dict], ruta: str,
     for m in ("left_margin", "right_margin"):
         setattr(sec, m, Cm(1.8))
     sec.top_margin = sec.bottom_margin = Cm(1.5)
+    sec.top_margin = Cm(3.4)
+    _encabezado(doc, guia)
     _pie(doc)
 
     claves = []

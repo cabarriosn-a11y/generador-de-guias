@@ -300,6 +300,7 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
                          "rap": a["rap"], "actividad": a["actividad"], "evidencia": a["evidencia"],
                          "criterios": [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]}
                         for a in bl["aas"]],
+        "_regional_centro": plan.get("regional_centro", ""),
         "_saberes": list(bl.get("saberes_conceptos", [])) + list(bl.get("saberes_proceso", [])),
         "_origen": {"planeacion": plan.get("_id", ""), "bloque": bl["indice"],
                     "tecnicas": {k: [t["id"] for t in (momentos.get(k, {}).get("tecnicas") or [])]
