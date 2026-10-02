@@ -79,6 +79,24 @@ def instrumento_sugerido(tipo: str) -> str:
     return {"conocimiento": "cuestionario", "producto": "rubrica"}.get(tipo, "lista_chequeo")
 
 
+TECNICA = {"conocimiento": "formulación de preguntas", "desempeno": "observación sistemática",
+           "producto": "valoración de producto"}
+NOMBRE_EN_GUIA = {"cuestionario": "cuestionario", "lista_chequeo": "lista de chequeo", "rubrica": "rúbrica"}
+
+
+def texto_guia(tipo: str, instrumento: str | None = None) -> str:
+    """Texto de la columna «Técnicas e instrumentos» de la guía (fuente ÚNICA para guía e instrumentos)."""
+    return (f"Técnica: {TECNICA.get(tipo, TECNICA['producto'])} · "
+            f"Instrumento: {NOMBRE_EN_GUIA[instrumento or instrumento_sugerido(tipo)]}")
+
+
+def instrumentos_de_evidencia(evidencia: str, elegidos: dict | None = None) -> str:
+    """Columna 6 de la tabla 4 para una evidencia completa (puede traer conocimiento+desempeño+producto).
+    `elegidos` = {texto_parte: instrumento} cuando el instructor cambió el sugerido."""
+    partes = partir_evidencia(evidencia) or [("producto", evidencia)]
+    return "\n".join(dict.fromkeys(texto_guia(t, (elegidos or {}).get(txt)) for t, txt in partes))
+
+
 def _criterios_lista(c) -> list[str]:
     if isinstance(c, list):
         return [str(x).strip() for x in c if str(x).strip()]
@@ -95,10 +113,10 @@ def evidencias_de_guia(guia: dict) -> list[dict]:
                 base.append({"fase": fila[0], "actividad_proyecto": fila[1], "rap": "",
                              "actividad": fila[2], "evidencia": fila[3], "criterios": fila[4]})
     items = []
-    for e in base:
+    for n_aa, e in enumerate(base):
         for tipo, txt in partir_evidencia(e.get("evidencia", "")):
             items.append({
-                "id": len(items), "tipo": tipo, "evidencia": txt,
+                "id": len(items), "aa": n_aa, "momento": e.get("momento", ""), "tipo": tipo, "evidencia": txt,
                 "fase": e.get("fase", ""), "actividad_proyecto": e.get("actividad_proyecto", ""),
                 "rap": e.get("rap", ""), "actividad": e.get("actividad", ""),
                 "criterios": _criterios_lista(e.get("criterios")),
@@ -142,7 +160,7 @@ def cuestionario_base(item: dict, saberes: list[str], n: int = 5) -> list[dict]:
     preguntas = []
     for s in fuentes[:n]:
         preguntas.append({"enunciado": f"Explica con tus palabras y con un ejemplo del proyecto: {s.rstrip('.')}.",
-                          "a": "", "b": "", "c": "", "d": "", "correcta": "",
+                          "criterio": "", "a": "", "b": "", "c": "", "d": "", "correcta": "",
                           "justificacion": "Respuesta abierta: valora la precisión conceptual y la aplicación al contexto."})
     return preguntas
 
@@ -153,6 +171,94 @@ def contenido_base(item: dict, instrumento: str, saberes: list[str]) -> list[dic
     if instrumento == "cuestionario":
         return cuestionario_base(item, saberes)
     return lista_base(item)
+
+
+# ─────────────────────────────── trazabilidad: nada por fuera ───────────────────────────────
+def criterios_cubiertos(filas: list[dict]) -> set[str]:
+    return {str(f.get("criterio", "")).strip() for f in filas or [] if str(f.get("criterio", "")).strip()}
+
+
+def cobertura(items: list[dict], instrumentos: dict) -> dict:
+    """`instrumentos` = {item_id: {"tipo", "contenido"}} (solo los elegidos).
+    Revisa, por cada actividad de aprendizaje (AA) de la guía:
+      - que TODAS sus evidencias tengan instrumento;
+      - que TODOS sus criterios de evaluación queden evaluados en algún instrumento de esa AA;
+      - que el instrumento coincida con lo que dice la guía (tabla 4)."""
+    por_aa = {}
+    for it in items:
+        por_aa.setdefault(it["aa"], []).append(it)
+    filas, sin_instr, sin_criterio, desalineados = [], [], [], []
+    for aa, its in por_aa.items():
+        crit = list(dict.fromkeys(c for it in its for c in it["criterios"]))
+        cubiertos = set()
+        for it in its:
+            ins = instrumentos.get(it["id"])
+            if not ins or not ins.get("contenido"):
+                sin_instr.append(it)
+                continue
+            cubiertos |= criterios_cubiertos(ins["contenido"])
+            if ins["tipo"] != it["instrumento"]:
+                desalineados.append(it)
+        faltan = [c for c in crit if c not in cubiertos]
+        sin_criterio += [(its[0], c) for c in faltan]
+        for it in its:
+            ins = instrumentos.get(it["id"]) or {}
+            mios = criterios_cubiertos(ins.get("contenido"))
+            filas.append({
+                "Momento": it.get("momento", ""), "AA": aa + 1, "Actividad de aprendizaje": it["actividad"],
+                "Evidencia": f"{it['tipo'].replace('desempeno', 'desempeño').capitalize()}: {it['evidencia']}",
+                "Instrumento": NOMBRE_EN_GUIA.get(ins.get("tipo"), "— sin instrumento —").capitalize(),
+                "Criterios evaluados": ", ".join(f"CE{k + 1:02d}" for k, c in enumerate(crit) if c in mios) or "—",
+                "Estado": "✅" if ins.get("contenido") and not faltan else "⚠️",
+            })
+    total_c = sum(len(dict.fromkeys(c for it in its for c in it["criterios"])) for its in por_aa.values())
+    return {"filas": filas, "sin_instrumento": sin_instr, "sin_criterio": sin_criterio,
+            "desalineados": desalineados, "total_criterios": total_c,
+            "completo": not sin_instr and not sin_criterio}
+
+
+def cerrar_cabos(items: list[dict], instrumentos: dict) -> dict:
+    """Agrega a cada AA los criterios que ningún instrumento evalúa (en su primer instrumento
+    de lista o rúbrica; si solo tiene cuestionario, una pregunta abierta ligada al criterio)."""
+    rep = cobertura(items, instrumentos)
+    for it, c in rep["sin_criterio"]:
+        destino = next((x for x in items if x["aa"] == it["aa"] and x["id"] in instrumentos
+                        and instrumentos[x["id"]].get("tipo") != "cuestionario"), None) or \
+            next((x for x in items if x["aa"] == it["aa"] and x["id"] in instrumentos), None)
+        if destino is None:
+            continue
+        ins = instrumentos[destino["id"]]
+        fila = {"lista_chequeo": lista_base, "rubrica": rubrica_base}.get(ins["tipo"])
+        if fila:
+            ins["contenido"].append(fila({"criterios": [c], "evidencia": destino["evidencia"]})[0])
+        else:
+            ins["contenido"].append({"enunciado": f"Explica cómo se cumple en tu evidencia: {_quitar_verbo_3p(c)}.",
+                                     "criterio": c, "a": "", "b": "", "c": "", "d": "", "correcta": "",
+                                     "justificacion": "Respuesta abierta ligada al criterio de evaluación."})
+    return instrumentos
+
+
+def actualizar_guia(guia: dict, items: list[dict], instrumentos: dict) -> dict:
+    """Devuelve una copia de la guía con la columna «Técnicas e instrumentos» (tabla 4) y el campo
+    de instrumentos de 3.3/3.4 alineados con los instrumentos realmente construidos."""
+    import copy
+    g = copy.deepcopy(guia)
+    elegidos = {}
+    for it in items:
+        if it["id"] in instrumentos:
+            elegidos.setdefault(it["aa"], {})[it["evidencia"]] = instrumentos[it["id"]]["tipo"]
+    evs = g.get("_evidencias") or []
+    tabla = g.get("evidencias_tabla") or []
+    for n, e in enumerate(evs):
+        if n + 1 < len(tabla) and len(tabla[n + 1]) >= 6:
+            tabla[n + 1][5] = instrumentos_de_evidencia(e.get("evidencia", ""), elegidos.get(n))
+    for k in ("3.3", "3.4"):
+        act = (g.get("actividades") or {}).get(k)
+        aas = [n for n, e in enumerate(evs) if k in str(e.get("momento", ""))]
+        if act is not None and aas:
+            act["instrumentos"] = "\n".join(dict.fromkeys(
+                instrumentos_de_evidencia(evs[n].get("evidencia", ""), elegidos.get(n)) for n in aas))
+    return g
 
 
 # ─────────────────────────────── Word (línea LogiLab SENA) ───────────────────────────────
@@ -227,7 +333,7 @@ def _identificacion(doc, guia, item, nombre_inst):
         ("Fase / actividad del proyecto", f"{item['fase']} · {item['actividad_proyecto']}"),
         ("Competencia", guia.get("competencia", "")),
         ("Resultado de aprendizaje", item.get("rap", "") or "; ".join(guia.get("raps", []))),
-        ("Actividad de aprendizaje", item.get("actividad", "")),
+        ("Actividad de aprendizaje", (f"[Guía {item['momento']}] " if item.get("momento") else "") + item.get("actividad", "")),
         ("Evidencia", f"{item['tipo'].replace('desempeno', 'desempeño').capitalize()}: {item['evidencia']}"),
         ("Instrumento", nombre_inst),
         ("Aprendiz / ficha", "______________________________   Ficha: ____________"),
@@ -264,7 +370,8 @@ def _pie(doc):
         r.font.size = Pt(8); r.font.color.rgb = RGBColor(0x39, 0xA9, 0x00)
 
 
-def generar_instrumentos_docx(guia: dict, instrumentos: list[dict], ruta: str) -> str:
+def generar_instrumentos_docx(guia: dict, instrumentos: list[dict], ruta: str,
+                              matriz: list[dict] | None = None) -> str:
     """`instrumentos` = [{"item": evidencia, "tipo": lista_chequeo|rubrica|cuestionario,
     "contenido": [...], "regla": str}]. Un instrumento por página; la clave del
     cuestionario va al final, en hoja aparte, solo para el instructor."""
@@ -280,13 +387,24 @@ def generar_instrumentos_docx(guia: dict, instrumentos: list[dict], ruta: str) -
     _pie(doc)
 
     claves = []
+    if matriz:
+        p = doc.add_paragraph(); r = p.add_run("MATRIZ DE TRAZABILIDAD · GUÍA → EVIDENCIAS → INSTRUMENTOS")
+        r.bold = True; r.font.size = Pt(14); r.font.color.rgb = RGBColor(0x39, 0xA9, 0x00)
+        doc.add_paragraph(f"Guía: {guia.get('competencia', '')} · {guia.get('fase_proyecto', '')}").runs[0].font.size = Pt(9)
+        cols = ["Momento", "AA", "Actividad de aprendizaje", "Evidencia", "Instrumento", "Criterios evaluados", "Estado"]
+        filas = [["Momento", "AA", "Actividad de aprendizaje", "Evidencia", "Instrumento", "Criterios", "✓"]]
+        filas += [[str(m.get(c, "")) for c in cols] for m in matriz]
+        _tabla(doc, filas, [1.6, 1, 7.5, 6.6, 2.6, 3.8, 1.2], tam=8)
+        nota = doc.add_paragraph("Cada actividad de aprendizaje de la guía tiene todas sus evidencias con instrumento y "
+                                 "todos sus criterios de evaluación (CE, del diseño curricular) evaluados.")
+        nota.runs[0].italic = True; nota.runs[0].font.size = Pt(8)
     for n, ins in enumerate(instrumentos):
-        if n:
+        if n or matriz:
             doc.add_page_break()
         item, tipo, cont = ins["item"], ins["tipo"], ins.get("contenido") or []
         nombre = TIPOS.get(tipo, tipo)
         p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        r = p.add_run(f"INSTRUMENTO DE EVALUACIÓN · {nombre.upper()}"); r.bold = True; r.font.size = Pt(14)
+        r = p.add_run(f"INSTRUMENTO N.° {n + 1} · {nombre.upper()}"); r.bold = True; r.font.size = Pt(14)
         r.font.color.rgb = RGBColor(0x39, 0xA9, 0x00)
         _identificacion(doc, guia, item, nombre)
 
@@ -323,9 +441,11 @@ def generar_instrumentos_docx(guia: dict, instrumentos: list[dict], ruta: str) -
         p = doc.add_paragraph(); r = p.add_run("CLAVE DE RESPUESTAS · SOLO PARA EL INSTRUCTOR")
         r.bold = True; r.font.size = Pt(13); r.font.color.rgb = RGBColor(0x39, 0xA9, 0x00)
         doc.add_paragraph(f"Evidencia: {item['evidencia']}").runs[0].font.size = Pt(9)
-        filas = [["N.°", "Respuesta correcta", "Justificación"]]
-        filas += [[str(i + 1), (q.get("correcta", "") or "Abierta").upper(), q.get("justificacion", "")]
-                  for i, q in enumerate(cont)]
-        _tabla(doc, filas, [1, 3.5, 19.8])
+        crit = item.get("criterios") or []
+        ce = lambda c: f"CE{crit.index(c) + 1:02d}" if c in crit else "—"
+        filas = [["N.°", "Respuesta correcta", "Criterio", "Justificación"]]
+        filas += [[str(i + 1), (q.get("correcta", "") or "Abierta").upper(), ce(q.get("criterio", "")),
+                   q.get("justificacion", "")] for i, q in enumerate(cont)]
+        _tabla(doc, filas, [1, 3.3, 1.8, 18.2])
     doc.save(ruta)
     return ruta

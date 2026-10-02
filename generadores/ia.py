@@ -734,11 +734,12 @@ REGLAS:
 {lista_c}"""
         if tipo == "cuestionario":
             saberes = "; ".join((ctx.get("saberes") or [])[:20])
-            formato = (f'{{"preguntas": [{{"enunciado": "...", "a": "...", "b": "...", "c": "...", "d": "...", '
+            formato = (f'{{"preguntas": [{{"criterio": <número del criterio que evalúa>, "enunciado": "...", "a": "...", "b": "...", "c": "...", "d": "...", '
                        f'"correcta": "a|b|c|d", "justificacion": "por qué es la correcta"}}]}}  '
                        f"→ exactamente {n_preguntas} preguntas de selección múltiple con única respuesta, "
                        f"basadas en estos saberes del diseño curricular: {saberes}. Distractores plausibles, "
-                       "sin «todas/ninguna de las anteriores», respuestas correctas repartidas entre a, b, c y d.")
+                       "sin «todas/ninguna de las anteriores», respuestas correctas repartidas entre a, b, c y d. "
+                       "Entre todas las preguntas deben quedar evaluados TODOS los criterios numerados.")
         elif tipo == "rubrica":
             formato = ('{"filas": [{"criterio": <número del criterio>, "excelente": "...", "bueno": "...", '
                        '"aceptable": "...", "por_mejorar": "..."}]}  → UNA fila por cada criterio numerado; '
@@ -747,7 +748,8 @@ REGLAS:
         else:
             formato = ('{"indicadores": [{"criterio": <número del criterio>, "indicador": "..."}]}  → 1 a 3 '
                        "indicadores OBSERVABLES por criterio (verificables con Sí/No), redactados en tercera "
-                       "persona y presente (p. ej. «Identifica…», «Presenta…»), sobre la evidencia concreta.")
+                       "persona y presente (p. ej. «Identifica…», «Presenta…»), sobre la evidencia concreta. "
+                       "NINGÚN criterio numerado puede quedar sin indicador.")
         prompt = f"""Construye un instrumento de evaluación SENA ({tipo.replace('_', ' ')}) para esta evidencia.
 
 {contexto}
@@ -780,6 +782,8 @@ REGLAS:
                     salida.append({k: str(q.get(k, "")).strip() for k in
                                    ("enunciado", "a", "b", "c", "d", "correcta", "justificacion")})
                     salida[-1]["correcta"] = salida[-1]["correcta"][:1].lower()
+                    i = _idx(q.get("criterio"))
+                    salida[-1]["criterio"] = crit[i] if i is not None else ""
             return salida
         if tipo == "rubrica":
             filas = res.get("filas", []) if isinstance(res, dict) else res

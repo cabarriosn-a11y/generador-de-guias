@@ -3180,11 +3180,11 @@ def seccion_guia_desde_planeacion():
 
 # ============ INSTRUMENTOS DE EVALUACIÓN DESDE LA GUÍA ============
 _COLS_INSTR = {
-    "lista_chequeo": {"indicador": "Indicador", "criterio": "Criterio del diseño"},
+    "lista_chequeo": {"indicador": "Indicador", "criterio": "Criterio del diseño que evalúa"},
     "rubrica": {"criterio": "Criterio del diseño", "excelente": "Excelente (4)", "bueno": "Bueno (3)",
                 "aceptable": "Aceptable (2)", "por_mejorar": "Por mejorar (1)"},
-    "cuestionario": {"enunciado": "Pregunta", "a": "a)", "b": "b)", "c": "c)", "d": "d)",
-                     "correcta": "Correcta", "justificacion": "Justificación (clave)"},
+    "cuestionario": {"enunciado": "Pregunta", "criterio": "Criterio que evalúa", "a": "a)", "b": "b)",
+                     "c": "c)", "d": "d)", "correcta": "Correcta", "justificacion": "Justificación (clave)"},
 }
 
 
@@ -3202,17 +3202,18 @@ def _guias_con_trazabilidad():
 
 def seccion_instrumentos_evaluacion():
     from generadores.instrumentos import (
-        TIPOS, REGLA_DEFECTO, evidencias_de_guia, contenido_base, generar_instrumentos_docx,
+        TIPOS, REGLA_DEFECTO, NOMBRE_EN_GUIA, evidencias_de_guia, contenido_base,
+        generar_instrumentos_docx, cobertura, cerrar_cabos, actualizar_guia,
     )
     import pandas as pd
 
     st.header("📋 Instrumentos de evaluación desde la guía")
-    st.caption("Lista de chequeo, rúbrica o cuestionario para cada evidencia de la guía, atados a los "
-               "criterios del diseño curricular. Los instrumentos no tienen formato institucional.")
+    st.caption("Cada actividad de aprendizaje de la guía → sus evidencias → un instrumento → todos sus "
+               "criterios de evaluación (diseño curricular). La app no deja cabos sueltos.")
 
     guardadas = _guias_con_trazabilidad()
     subida = st.file_uploader("…o sube el respaldo .json de una guía", type=["json"], key="ins_subida")
-    guia, gid = None, None
+    guia, gid, ruta_json = None, None, None
     if subida is not None:
         try:
             guia, gid = json.loads(subida.getvalue().decode("utf-8")), re.sub(r"\W+", "_", subida.name)
@@ -3228,7 +3229,7 @@ def seccion_instrumentos_evaluacion():
         datos_por_ruta = {str(f): d for f, d in guardadas}
         sel = st.selectbox("① Guía de aprendizaje", rutas, key="ins_guia_sel",
                            format_func=lambda r: f"{Path(r).stem} · {datos_por_ruta[r].get('fase_proyecto', '')[:30]}")
-        guia, gid = datos_por_ruta[sel], re.sub(r"\W+", "_", Path(sel).stem)
+        guia, gid, ruta_json = datos_por_ruta[sel], re.sub(r"\W+", "_", Path(sel).stem), Path(sel)
     if not guia:
         st.info("Primero genera una guía en «📗 Guía desde la planeación» (o sube su respaldo .json).")
         return
@@ -3237,98 +3238,157 @@ def seccion_instrumentos_evaluacion():
     if not items:
         st.warning("La guía no tiene evidencias en la tabla 4.")
         return
-    st.markdown(f"**{guia.get('competencia', '')[:120]}** · {len(items)} evidencia(s) evaluable(s)")
+    n_aa = len({it["aa"] for it in items})
+    st.markdown(f"**{guia.get('competencia', '')[:120]}** · {n_aa} actividad(es) de aprendizaje · "
+                f"{len(items)} evidencia(s) · todas llevan instrumento")
     etiqueta = lambda i: (f"{i + 1}. {items[i]['tipo'].replace('desempeno', 'desempeño').capitalize()} · "
                           f"{items[i]['evidencia'][:90]}")
-    elegidas = st.multiselect("② Evidencias a evaluar", list(range(len(items))), default=list(range(len(items))),
-                              format_func=etiqueta, key=f"ins_sel_{gid}")
     cli = obtener_cliente_ia()
     ctx = {k: guia.get(k, "") for k in ("programa", "proyecto_formativo", "competencia")}
     ctx["saberes"] = guia.get("_saberes", [])
 
+    def _tipo(i):
+        return st.session_state.get(f"ins_{gid}_{i}_tipo", items[i]["instrumento"])
+
+    def _poner(i, tipo, filas):
+        st.session_state[f"ins_{gid}_{i}_{tipo}"] = filas
+        st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
+
     if cli and st.button("🤖 Generar TODOS los instrumentos con IA", use_container_width=True):
         fallos = []
         barra = st.progress(0.0)
-        for n, i in enumerate(elegidas):
-            tipo = st.session_state.get(f"ins_{gid}_{i}_tipo", items[i]["instrumento"])
+        for n, it in enumerate(items):
             try:
-                filas = cli.generar_instrumento(tipo, items[i], ctx)
+                filas = cli.generar_instrumento(_tipo(it["id"]), it, ctx)
                 if not filas:
                     raise RuntimeError("respuesta vacía")
-                st.session_state[f"ins_{gid}_{i}_{tipo}"] = filas
-                st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
+                _poner(it["id"], _tipo(it["id"]), filas)
             except Exception as e:
-                fallos.append(f"{etiqueta(i)[:50]}: {str(e)[:120]}")
-            barra.progress((n + 1) / max(len(elegidas), 1))
+                fallos.append(f"{etiqueta(it['id'])[:50]}: {str(e)[:120]}")
+            barra.progress((n + 1) / len(items))
         if fallos:
-            st.warning("Quedaron con plantilla (sin IA):\n\n" + "\n\n".join("• " + f for f in fallos))
+            st.session_state[f"ins_{gid}_fallos"] = fallos
         st.rerun()
+    for f in st.session_state.pop(f"ins_{gid}_fallos", []):
+        st.warning("Quedó con plantilla (sin IA): " + f)
     if not cli:
         st.info("Sin IA configurada: se usa la plantilla (indicadores y rúbrica con los criterios del diseño, "
                 "cuestionario con preguntas abiertas).")
 
-    instrumentos = []
-    for i in elegidas:
-        it = items[i]
-        with st.expander(f"📌 {etiqueta(i)}", expanded=len(elegidas) <= 2):
-            st.caption(f"Fase: {it['fase']} · AA: {it['actividad'][:140]}")
-            if it["criterios"]:
-                st.markdown("🔒 **Criterios del diseño:** " + " · ".join(f"CE{k + 1:02d}" for k in range(len(it['criterios']))))
-            opciones = list(TIPOS)
-            if f"ins_{gid}_{i}_tipo" not in st.session_state:
-                st.session_state[f"ins_{gid}_{i}_tipo"] = it["instrumento"]
-            tipo = st.selectbox(f"Instrumento (⭐ sugerido: {TIPOS[it['instrumento']]})", opciones,
-                                key=f"ins_{gid}_{i}_tipo", format_func=TIPOS.get)
-            kc = f"ins_{gid}_{i}_{tipo}"
-            if kc not in st.session_state:
-                st.session_state[kc] = contenido_base(it, tipo, ctx["saberes"])
-            b1, b2 = st.columns(2)
-            if cli and b1.button("🤖 Generar con IA", key=f"{kc}_ia", use_container_width=True):
-                try:
-                    with st.spinner("Construyendo el instrumento…"):
-                        filas = cli.generar_instrumento(tipo, it, ctx)
-                    if filas:
-                        st.session_state[kc] = filas
-                        st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
-                        st.rerun()
-                    st.warning("La IA respondió vacío; queda la plantilla.")
-                except Exception as e:
-                    st.error(f"No se pudo con IA: {str(e)[:200]}")
-            if b2.button("📝 Volver a la plantilla", key=f"{kc}_pl", use_container_width=True):
-                st.session_state[kc] = contenido_base(it, tipo, ctx["saberes"])
-                st.session_state[f"ins_{gid}_{i}_v"] = st.session_state.get(f"ins_{gid}_{i}_v", 0) + 1
-                st.rerun()
-            cols = _COLS_INSTR[tipo]
-            df = pd.DataFrame([{c: f.get(c, "") for c in cols} for f in st.session_state[kc]], columns=list(cols))
-            editado = st.data_editor(
-                df, num_rows="dynamic", use_container_width=True, hide_index=True,
-                key=f"{kc}_ed_{st.session_state.get(f'ins_{gid}_{i}_v', 0)}",
-                column_config={c: st.column_config.TextColumn(t, disabled=(c == "criterio" and tipo == "rubrica"))
-                               for c, t in cols.items()})
-            regla = st.text_input("Regla de aprobación", REGLA_DEFECTO[tipo], key=f"{kc}_regla")
-            filas = [{c: ("" if pd.isna(v) else str(v)) for c, v in r.items()}
-                     for r in editado.to_dict("records")]
-            filas = [f for f in filas if any(v.strip() for v in f.values())]
-            instrumentos.append({"item": it, "tipo": tipo, "contenido": filas, "regla": regla})
+    construidos = {}                           # item_id → {"tipo", "contenido", "regla"}
+    for aa in sorted({it["aa"] for it in items}):
+        its = [it for it in items if it["aa"] == aa]
+        st.markdown(f"#### {('Guía ' + its[0]['momento'] + ' · ') if its[0].get('momento') else ''}"
+                    f"AA {aa + 1}: {its[0]['actividad'][:150]}")
+        crit = list(dict.fromkeys(c for it in its for c in it["criterios"]))
+        if crit:
+            with st.popover(f"🔒 {len(crit)} criterios del diseño para esta actividad"):
+                for k, c in enumerate(crit):
+                    st.markdown(f"**CE{k + 1:02d}** · {c}")
+        for it in its:
+            i = it["id"]
+            with st.expander(f"📌 {etiqueta(i)}", expanded=len(items) <= 3):
+                if f"ins_{gid}_{i}_tipo" not in st.session_state:
+                    st.session_state[f"ins_{gid}_{i}_tipo"] = it["instrumento"]
+                tipo = st.selectbox(f"Instrumento (⭐ el de la guía: {TIPOS[it['instrumento']]})", list(TIPOS),
+                                    key=f"ins_{gid}_{i}_tipo", format_func=TIPOS.get)
+                if tipo != it["instrumento"]:
+                    st.caption("✏️ Cambiaste el instrumento: al generar, la guía se actualiza para que diga "
+                               f"«{NOMBRE_EN_GUIA[tipo]}».")
+                kc = f"ins_{gid}_{i}_{tipo}"
+                if kc not in st.session_state:
+                    st.session_state[kc] = contenido_base(it, tipo, ctx["saberes"])
+                b1, b2 = st.columns(2)
+                if cli and b1.button("🤖 Generar con IA", key=f"{kc}_ia", use_container_width=True):
+                    try:
+                        with st.spinner("Construyendo el instrumento…"):
+                            filas = cli.generar_instrumento(tipo, it, ctx)
+                        if filas:
+                            _poner(i, tipo, filas)
+                            st.rerun()
+                        st.warning("La IA respondió vacío; queda la plantilla.")
+                    except Exception as e:
+                        st.error(f"No se pudo con IA: {str(e)[:200]}")
+                if b2.button("📝 Volver a la plantilla", key=f"{kc}_pl", use_container_width=True):
+                    _poner(i, tipo, contenido_base(it, tipo, ctx["saberes"]))
+                    st.rerun()
+                cols = _COLS_INSTR[tipo]
+                df = pd.DataFrame([{c: f.get(c, "") for c in cols} for f in st.session_state[kc]],
+                                  columns=list(cols))
+                conf = {c: st.column_config.TextColumn(t) for c, t in cols.items()}
+                if tipo == "rubrica":
+                    conf["criterio"] = st.column_config.TextColumn(cols["criterio"], disabled=True)
+                else:
+                    conf["criterio"] = st.column_config.SelectboxColumn(cols["criterio"], options=[""] + crit,
+                                                                        width="medium")
+                editado = st.data_editor(df, num_rows="dynamic", use_container_width=True, hide_index=True,
+                                         key=f"{kc}_ed_{st.session_state.get(f'ins_{gid}_{i}_v', 0)}",
+                                         column_config=conf)
+                regla = st.text_input("Regla de aprobación", REGLA_DEFECTO[tipo], key=f"{kc}_regla")
+                filas = [{c: ("" if pd.isna(v) else str(v)) for c, v in r.items()}
+                         for r in editado.to_dict("records")]
+                filas = [f for f in filas if any(v.strip() for v in f.values())]
+                construidos[i] = {"tipo": tipo, "contenido": filas, "regla": regla}
 
-    if instrumentos and st.button("🚀 Generar instrumentos (Word)", type="primary", use_container_width=True):
-        vacios = [TIPOS[x["tipo"]] for x in instrumentos if not x["contenido"]]
-        if vacios:
-            st.error("Hay instrumentos sin filas: " + ", ".join(vacios))
-        else:
-            ruta = GUIAS_DIR / f"Instrumentos_{gid[:40]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-            try:
-                generar_instrumentos_docx(guia, instrumentos, str(ruta))
-                st.session_state[f"ins_{gid}_archivo"] = str(ruta)
-                st.success(f"✅ {len(instrumentos)} instrumento(s) generados.")
-            except Exception as e:
-                st.error(f"Error: {e}")
-                st.exception(e)
+    # ───── trazabilidad: nada por fuera ─────
+    st.markdown("---")
+    st.subheader("🔗 Trazabilidad guía → instrumentos")
+    rep = cobertura(items, construidos)
+    cubiertos = rep["total_criterios"] - len(rep["sin_criterio"])
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Evidencias con instrumento", f"{len(items) - len(rep['sin_instrumento'])}/{len(items)}")
+    m2.metric("Criterios evaluados", f"{cubiertos}/{rep['total_criterios']}")
+    m3.metric("Cambios frente a la guía", len(rep["desalineados"]))
+    st.dataframe(pd.DataFrame(rep["filas"]), use_container_width=True, hide_index=True)
+    if rep["completo"]:
+        st.success("✅ Sin cabos sueltos: todas las evidencias tienen instrumento y todos los criterios quedan evaluados.")
+    else:
+        for it in rep["sin_instrumento"]:
+            st.error(f"Sin instrumento (o vacío): {etiqueta(it['id'])}")
+        for it, c in rep["sin_criterio"]:
+            st.warning(f"AA {it['aa'] + 1} · criterio sin evaluar: {c[:140]}")
+        if st.button("🧷 Cerrar los cabos sueltos automáticamente", type="primary", use_container_width=True):
+            arreglado = cerrar_cabos(items, {k: {**v, "contenido": list(v["contenido"])} for k, v in construidos.items()})
+            for it in items:
+                if not (arreglado.get(it["id"]) or {}).get("contenido"):
+                    arreglado[it["id"]] = {"tipo": _tipo(it["id"]),
+                                           "contenido": contenido_base(it, _tipo(it["id"]), ctx["saberes"])}
+            arreglado = cerrar_cabos(items, arreglado)
+            for k, v in arreglado.items():
+                _poner(k, v["tipo"], v["contenido"])
+            st.rerun()
+
+    if st.button("🚀 Generar instrumentos (Word)", type="primary", use_container_width=True,
+                 disabled=not rep["completo"],
+                 help=None if rep["completo"] else "Primero cierra los cabos sueltos."):
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        ruta = GUIAS_DIR / f"Instrumentos_{gid[:40]}_{stamp}.docx"
+        lista = [{"item": it, **construidos[it["id"]]} for it in items]
+        try:
+            generar_instrumentos_docx(guia, lista, str(ruta), matriz=rep["filas"])
+            st.session_state[f"ins_{gid}_archivo"] = str(ruta)
+            st.session_state.pop(f"ins_{gid}_guia", None)
+            if rep["desalineados"]:            # la guía debe decir el instrumento que de verdad se usa
+                nueva = actualizar_guia(guia, items, construidos)
+                base = ruta_json.with_suffix("") if ruta_json else GUIAS_DIR / f"Guia_{gid[:40]}_{stamp}"
+                generar_guia_aprendizaje(nueva, str(base) + ".docx")
+                Path(str(base) + ".json").write_text(json.dumps(nueva, ensure_ascii=False, indent=1), encoding="utf-8")
+                st.session_state[f"ins_{gid}_guia"] = str(base) + ".docx"
+            st.success(f"✅ {len(lista)} instrumento(s) + matriz de trazabilidad."
+                       + (" La guía se actualizó con los instrumentos que cambiaste." if rep["desalineados"] else ""))
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.exception(e)
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    d1, d2 = st.columns(2)
     ruta = st.session_state.get(f"ins_{gid}_archivo")
     if ruta and Path(ruta).exists():
-        st.download_button("⬇️ Descargar instrumentos (Word)", Path(ruta).read_bytes(), file_name=Path(ruta).name,
-                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                           use_container_width=True)
+        d1.download_button("⬇️ Descargar instrumentos (Word)", Path(ruta).read_bytes(), file_name=Path(ruta).name,
+                           mime=mime, use_container_width=True)
+    rg = st.session_state.get(f"ins_{gid}_guia")
+    if rg and Path(rg).exists():
+        d2.download_button("⬇️ Descargar guía actualizada (Word)", Path(rg).read_bytes(), file_name=Path(rg).name,
+                           mime=mime, use_container_width=True)
 
 
 def _fila_planeacion_vacia():

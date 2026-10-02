@@ -197,16 +197,10 @@ def etiqueta_bloque(bl: dict) -> str:
 
 
 def instrumento_para(evidencia: str) -> str:
-    """Técnica e instrumento de evaluación según el tipo de evidencia (SENA)."""
-    e = _norm(evidencia)
-    partes = []
-    if "conocimiento" in e:
-        partes.append("Técnica: formulación de preguntas · Instrumento: cuestionario")
-    if "desempeno" in e:
-        partes.append("Técnica: observación sistemática · Instrumento: lista de chequeo")
-    if "producto" in e or not partes:
-        partes.append("Técnica: valoración de producto · Instrumento: lista de chequeo")
-    return "\n".join(partes)
+    """Técnica e instrumento de evaluación según el tipo de evidencia (SENA). La misma regla
+    usa la sección de instrumentos, así la guía y los instrumentos nunca se contradicen."""
+    from .instrumentos import instrumentos_de_evidencia
+    return instrumentos_de_evidencia(evidencia)
 
 
 def aas_por_momento(bl: dict) -> dict:
@@ -300,7 +294,8 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
         "autor_dependencia": autor.get("dependencia", ""), "autor_fecha": autor.get("fecha", ""),
         # trazabilidad (no va al formato): para instrumentos y portafolio
         # evidencias detalladas: de aquí salen los instrumentos de evaluación
-        "_evidencias": [{"fase": a.get("fase") or bl["fase"],
+        "_evidencias": [{"momento": " y ".join(k for k in ("3.3", "3.4") if any(a is x for x in reparto[k])),
+                         "fase": a.get("fase") or bl["fase"],
                          "actividad_proyecto": a.get("actividad_proyecto") or bl["actividad_proyecto"],
                          "rap": a["rap"], "actividad": a["actividad"], "evidencia": a["evidencia"],
                          "criterios": [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]}
