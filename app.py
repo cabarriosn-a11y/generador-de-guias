@@ -2871,7 +2871,9 @@ def seccion_guia_desde_planeacion():
     from generadores.guia_desde_planeacion import (
         MOMENTOS, PESO_HORAS, cargar_atlas, bloques_de_planeacion, etiqueta_bloque, sugerir_tecnicas,
         bloque_competencia_completa,
-        aas_por_momento, descripcion_plantilla, armar_datos_guia, validar_guia, repartir)
+        aas_por_momento, descripcion_plantilla, armar_datos_guia, validar_guia, repartir,
+        saberes_sueltos, subevidencia_plantilla, descripcion_evidencia_plantilla, apropiacion_texto,
+        transferencia_evidencia_plantilla)
     st.header("📗 Guía de aprendizaje desde la planeación (GFPI-F-135)")
     st.caption("La guía hereda de la planeación la identificación, los RAP, las actividades de aprendizaje "
                "(V+O+C), las evidencias, los criterios, las horas, el ambiente y los materiales. Aquí solo "
@@ -2961,6 +2963,17 @@ def seccion_guia_desde_planeacion():
         if pend:
             st.session_state[f"{clave}_desc_{k}"] = pend.get("descripcion", "")
             st.session_state[f"{clave}_apoyo_{k}"] = pend.get("apoyo", "")
+    for i in range(len(bl["aas"])):
+        pend = st.session_state.pop(f"{clave}_pend_dev_{i}", None)
+        if pend:
+            st.session_state[f"{clave}_dev_{i}"] = pend
+        for j in range(3):
+            pend = st.session_state.pop(f"{clave}_pend_sub_{i}_{j}", None)
+            if pend:
+                st.session_state[f"{clave}_sub_{i}_{j}"] = pend
+    pend = st.session_state.pop(f"{clave}_pend_ev34", None)
+    if pend:
+        st.session_state[f"{clave}_ev34"] = pend
     pend = st.session_state.pop(f"{clave}_pend_pres", None)
     if pend is not None:
         st.session_state[f"{clave}_pres"] = pend
@@ -2969,7 +2982,9 @@ def seccion_guia_desde_planeacion():
         st.session_state[f"{clave}_glos"] = pend
 
     st.subheader("③ Momentos de la guía")
-    estado_vacios = [k for k in MOMENTOS if not str(st.session_state.get(f"{clave}_desc_{k}", "")).strip()]
+    estado_vacios = [k for k in MOMENTOS if k != "3.3" and not str(st.session_state.get(f"{clave}_desc_{k}", "")).strip()]
+    estado_vacios += [f"3.3.{i + 1}" for i in range(len(bl["aas"]))
+                      if not str(st.session_state.get(f"{clave}_dev_{i}", "")).strip()]
     g1, g2 = st.columns([1.4, 1])
     with g1:
         todo_ia = st.button("🤖 Redactar TODA la guía con IA (momentos, presentación y glosario)",
@@ -2987,10 +3002,28 @@ def seccion_guia_desde_planeacion():
                    + " — si generas así, se llenan con la plantilla automáticamente.")
     if todo_ia or todo_tpl or reintentar:
         objetivo = set(fallidos) if reintentar else set(MOMENTOS) | {"presentación", "glosario"}
+        if reintentar and any(f.startswith("3.3.") for f in fallidos):
+            objetivo.add("3.3_parcial")
         todo_ia = todo_ia or reintentar
         errores = []
         barra = st.progress(0.0, text="Preparando…")
         for n, k in enumerate(MOMENTOS, 1):
+            if k == "3.3":
+                tecs_33 = [por_id[i] for i in (st.session_state.get(f"{clave}_tec_3.3") or []) if i in por_id]
+                for i, aa in enumerate(bl["aas"]):
+                    if not ({"3.3", f"3.3.{i + 1}"} & objetivo):
+                        continue
+                    texto = None
+                    if todo_ia:
+                        try:
+                            barra.progress((n - 1) / 6, text=f"Redactando 3.3.{i + 1}…")
+                            texto = cli_ia.describir_evidencia(aa, ctx_ia, tecs_33)
+                        except Exception as e:
+                            errores.append(f"3.3.{i + 1}: {e}")
+                    elif str(st.session_state.get(f"{clave}_dev_{i}", "")).strip():
+                        continue
+                    st.session_state[f"{clave}_pend_dev_{i}"] = texto or descripcion_evidencia_plantilla(aa)
+                continue
             if k not in objetivo:
                 continue
             sel = st.session_state.get(f"{clave}_tec_{k}") or []
@@ -3000,7 +3033,9 @@ def seccion_guia_desde_planeacion():
                 try:
                     barra.progress((n - 1) / 6, text=f"Redactando {k} {MOMENTOS[k]['nombre']}…")
                     res = cli_ia.redactar_momento(k, MOMENTOS[k]["nombre"], MOMENTOS[k]["proposito"],
-                                                  ctx_ia, tecs_k, reparto.get(k, []))
+                                                  ctx_ia, tecs_k, bl["aas"] if k == "3.4" else reparto.get(k, []))
+                    if k == "3.4" and res.get("evidencia"):
+                        st.session_state[f"{clave}_pend_ev34"] = res["evidencia"]
                 except Exception as e:
                     errores.append(f"{k}: {e}")
             elif str(st.session_state.get(f"{clave}_desc_{k}", "")).strip():
@@ -3046,14 +3081,13 @@ def seccion_guia_desde_planeacion():
             st.success("✅ Guía completa: revisa cada momento y ajusta lo que quieras.")
     usadas = set()
     momentos = {}
+    apropiacion, transferencia = {}, {}
     tabs = st.tabs([f"{k} {v['nombre'].split(' e ')[0]}" for k, v in MOMENTOS.items()])
     for tab, (k, info) in zip(tabs, MOMENTOS.items()):
         with tab:
             st.caption(f"**Propósito (GFPI-G-060):** {info['proposito']}")
             aas_k = reparto.get(k, [])
-            if aas_k:
-                st.caption("**Desarrolla:** " + " · ".join(a["actividad"] for a in aas_k if a["actividad"]))
-            evid = " ".join(a["evidencia"] for a in aas_k)
+            evid = " ".join(a["evidencia"] for a in (bl["aas"] if k == "3.4" else aas_k))
             sugeridas = sugerir_tecnicas(atlas, k, contexto_txt, bl["raps"], evid, n=6, excluir=usadas)
             ids_sug = [t["id"] for _, t in sugeridas]
             st.caption("⭐ **Sugeridas para este momento:** " +
@@ -3077,6 +3111,62 @@ def seccion_guia_desde_planeacion():
             for t in tecs:
                 with st.container(border=True):
                     _tarjeta_tecnica(t, info["letra"])
+            if k == "3.3":
+                apropiacion = {}
+                horas = st.number_input("Horas", 0, 2000, key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
+                st.info("Organización SENA: **3.3.1, 3.3.2…** = cada actividad de aprendizaje de la planeación "
+                        "(tal cual) → su evidencia → descripción de la evidencia → sub-evidencias si algún "
+                        "saber no encaja en la evidencia principal.")
+                for i, aa in enumerate(bl["aas"]):
+                    with st.container(border=True):
+                        st.markdown(f"**3.3.{i + 1}** 🔒 {aa['actividad'] or '— (sin redactar en la planeación)'}")
+                        st.caption(f"🔒 **Evidencia:** {aa['evidencia'] or '—'}")
+                        dev = st.text_area("Descripción de la evidencia", height=110,
+                                           key=_init_estado(f"{clave}_dev_{i}", ""))
+                        b1, b2 = st.columns(2)
+                        if b1.button("🤖 Redactar con IA", key=f"{clave}_devia_{i}", disabled=not cli_ia,
+                                     use_container_width=True):
+                            try:
+                                with st.spinner("Redactando la descripción de la evidencia…"):
+                                    st.session_state[f"{clave}_pend_dev_{i}"] = cli_ia.describir_evidencia(aa, ctx_ia, tecs)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"IA: {e}")
+                        if b2.button("📝 Plantilla", key=f"{clave}_devtpl_{i}", use_container_width=True):
+                            st.session_state[f"{clave}_pend_dev_{i}"] = descripcion_evidencia_plantilla(aa)
+                            st.rerun()
+                        sueltos = saberes_sueltos(aa)
+                        opciones_s = list(aa.get("saberes") or [])
+                        if sueltos:
+                            st.caption("⚠️ **Saberes que casi no encajan en esta evidencia** (candidatos a "
+                                       "sub-evidencia): " + " · ".join(x[:60] for x in sueltos[:6]))
+                        n_sub = st.number_input("Sub-evidencias", 0, 3, key=_init_estado(f"{clave}_nsub_{i}", 0),
+                                                help="Para saberes de la lista que necesitan explicarse y no "
+                                                     "encajan en la evidencia principal.")
+                        subs = []
+                        for j_ in range(int(n_sub)):
+                            sk = f"{clave}_subsab_{i}_{j_}"
+                            if sk not in st.session_state:
+                                st.session_state[sk] = sueltos[j_ * 3:(j_ + 1) * 3] if sueltos else []
+                            sab = st.multiselect(f"Saberes de la sub-evidencia 3.3.{i + 1}.{j_ + 1}", opciones_s,
+                                                 key=sk, format_func=lambda x, su=tuple(sueltos):
+                                                 ("⚠️ " if x in su else "") + x[:110])
+                            tk = f"{clave}_sub_{i}_{j_}"
+                            if not str(st.session_state.get(tk, "")).strip() and sab:
+                                st.session_state[tk] = subevidencia_plantilla(sab)
+                            txt = st.text_area(f"Sub-evidencia 3.3.{i + 1}.{j_ + 1}", height=70,
+                                               key=_init_estado(tk, ""))
+                            if st.button("✨ Proponer texto con estos saberes", key=f"{tk}_prop"):
+                                st.session_state[f"{clave}_pend_sub_{i}_{j_}"] = subevidencia_plantilla(sab)
+                                st.rerun()
+                            subs.append({"texto": txt, "saberes": sab})
+                        apropiacion[i] = {"desc_evidencia": dev, "subs": subs}
+                desc = apropiacion_texto(bl["aas"], apropiacion)
+                with st.expander("👁️ Así queda 3.3 en la guía"):
+                    st.markdown(desc.replace("\n", "  \n"))
+                apoyo = st.text_input("Material de apoyo", key=_init_estado(f"{clave}_apoyo_{k}", ""))
+                momentos[k] = {"tecnicas": tecs, "descripcion": desc, "apoyo": apoyo, "horas": horas}
+                continue
             c1, c2 = st.columns([1, 3])
             with c1:
                 horas = st.number_input("Horas", 0, 2000, key=_init_estado(f"{clave}_h_{k}", horas_def[k]))
@@ -3084,8 +3174,12 @@ def seccion_guia_desde_planeacion():
                              use_container_width=True):
                     try:
                         with st.spinner("Redactando con la técnica elegida…"):
-                            st.session_state[f"{clave}_pend_{k}"] = cli_ia.redactar_momento(
-                                k, info["nombre"], info["proposito"], ctx_ia, tecs, aas_k)
+                            res_k = cli_ia.redactar_momento(
+                                k, info["nombre"], info["proposito"], ctx_ia, tecs,
+                                bl["aas"] if k == "3.4" else aas_k)
+                            st.session_state[f"{clave}_pend_{k}"] = res_k
+                            if k == "3.4" and res_k.get("evidencia"):
+                                st.session_state[f"{clave}_pend_ev34"] = res_k["evidencia"]
                         st.rerun()
                     except Exception as e:
                         st.error(f"IA: {e}")
@@ -3101,6 +3195,22 @@ def seccion_guia_desde_planeacion():
                 apoyo = st.text_input("Material de apoyo", key=_init_estado(f"{clave}_apoyo_{k}", ""))
             if k in ("3.3", "3.4") and aas_k:
                 st.caption("**Evidencias (de la planeación):** " + " | ".join(a["evidencia"] for a in aas_k if a["evidencia"]))
+            if k == "3.4":
+                st.markdown("**Evidencia y criterios de la actividad integradora** (demuestra lo aprendido en "
+                            "toda la competencia)")
+                ev34 = st.text_input("Evidencia de la actividad de transferencia", key=_init_estado(
+                    f"{clave}_ev34", transferencia_evidencia_plantilla(tecs[0] if tecs else None)))
+                ck = f"{clave}_crit34"
+                if ck not in st.session_state:
+                    primeros = {}
+                    for a in bl["aas"]:
+                        cc = [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]
+                        if cc and a["rap_idx"] not in primeros:
+                            primeros[a["rap_idx"]] = cc[0]
+                    st.session_state[ck] = [c for c in dict.fromkeys(primeros.values()) if c in bl["criterios"]]
+                crit34 = st.multiselect("Criterios que evalúa (del diseño curricular)", bl["criterios"], key=ck,
+                                        format_func=lambda x: x[:120])
+                transferencia = {"evidencia": ev34, "criterios": crit34}
             momentos[k] = {"tecnicas": tecs, "descripcion": desc, "apoyo": apoyo, "horas": horas}
 
     # ---- ④ Presentación, glosario, autor ----
@@ -3145,7 +3255,8 @@ def seccion_guia_desde_planeacion():
                                                          reparto.get(k, []))
         datos = armar_datos_guia(plan, bl, momentos, presentacion, glosario,
                                  [r for r in refs_txt.splitlines() if r.strip()],
-                                 {"nombre": autor, "dependencia": dependencia, "fecha": fecha})
+                                 {"nombre": autor, "dependencia": dependencia, "fecha": fecha},
+                                 apropiacion=apropiacion, transferencia=transferencia)
         GUIAS_DIR.mkdir(parents=True, exist_ok=True)
         base = re.sub(r"\W+", "_", f"Guia_{bl['competencia'][:20]}_{bl['fase'][:12]}")[:60]
         ruta = GUIAS_DIR / f"{base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
@@ -3283,8 +3394,9 @@ def seccion_instrumentos_evaluacion():
     construidos = {}                           # item_id → {"tipo", "contenido", "regla"}
     for aa in sorted({it["aa"] for it in items}):
         its = [it for it in items if it["aa"] == aa]
-        st.markdown(f"#### {('Guía ' + its[0]['momento'] + ' · ') if its[0].get('momento') else ''}"
-                    f"AA {aa + 1}: {its[0]['actividad'][:150]}")
+        etq_aa = (("3.4 · Transferencia (integradora)" if its[0].get("integradora") else f"Guía {its[0]['momento']}")
+                  if its[0].get("momento") else f"AA {aa + 1}")
+        st.markdown(f"#### {etq_aa}: {its[0]['actividad'][:150]}")
         crit = list(dict.fromkeys(c for it in its for c in it["criterios"]))
         if crit:
             with st.popover(f"🔒 {len(crit)} criterios del diseño para esta actividad"):

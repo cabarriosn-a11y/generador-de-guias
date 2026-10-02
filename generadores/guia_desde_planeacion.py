@@ -24,13 +24,17 @@ MOMENTOS = {
                          "necesidad de aprender. No se exige dominio técnico ni se califican opiniones."},
     "3.2": {"letra": "C", "nombre": "Contextualización e identificación de conocimientos",
             "proposito": "Reconocer saberes previos, condiciones del contexto y brechas de aprendizaje "
-                         "(autodiagnóstico y metacognición)."},
+                         "(autodiagnóstico y metacognición). Es GENERAL: enmarca el concepto global de "
+                         "TODA la competencia, no de una sola actividad."},
     "3.3": {"letra": "A", "nombre": "Apropiación",
             "proposito": "Construir conceptos, procedimientos y actitudes mediante estudio, práctica "
-                         "acompañada y retroalimentación."},
+                         "acompañada y retroalimentación. Se organiza en 3.3.1, 3.3.2… una por cada "
+                         "actividad de aprendizaje de la planeación (tal cual), con su evidencia y, si "
+                         "hace falta, sub-evidencias para saberes que no encajan en la evidencia principal."},
     "3.4": {"letra": "T", "nombre": "Transferencia del conocimiento",
-            "proposito": "Aplicar lo aprendido a una situación nueva del contexto productivo, justificar "
-                         "decisiones y verificar resultados."},
+            "proposito": "Actividad INTEGRADORA del aprendiz (estudio de caso, proyecto, simulación…) "
+                         "que demuestre lo aprendido en el transcurso de TODA la competencia: aplicar a una "
+                         "situación nueva del contexto productivo, justificar decisiones y verificar resultados."},
 }
 PESO_HORAS = {"3.1": 10, "3.2": 15, "3.3": 45, "3.4": 30}     # % sugerido; el instructor ajusta
 
@@ -159,6 +163,8 @@ def bloques_de_planeacion(plan: dict) -> list:
                     "horas_directas": int(a.get("horas_directas") or 0),
                     "horas_independientes": int(a.get("horas_independientes") or 0),
                     "criterios": str(d.get("criterios_evaluacion", "") or "").strip(),
+                    "saberes": [x.strip() for c in ("saberes_conceptos", "saberes_proceso")
+                                for x in re.split(r"\n\s*\n|\n", str(d.get(c, "") or "")) if x.strip()],
                 })
         if not raps:
             raps = [r for r in str(fila.get("raps", "")).splitlines() if r.strip()]
@@ -204,12 +210,79 @@ def instrumento_para(evidencia: str) -> str:
 
 
 def aas_por_momento(bl: dict) -> dict:
-    """Las AA de la planeación son el eje de 3.3 y 3.4: con 1 AA, ambas la desarrollan
-    (apropiación y luego transferencia); con varias, la última va a transferencia."""
-    aas = bl["aas"]
-    if len(aas) <= 1:
-        return {"3.3": aas, "3.4": aas}
-    return {"3.3": aas[:-1], "3.4": aas[-1:]}
+    """Organización SENA: TODAS las AA de la planeación van en 3.3 (3.3.1, 3.3.2…), tal cual.
+    3.4 Transferencia es una actividad integradora propia de toda la competencia."""
+    return {"3.3": list(bl["aas"]), "3.4": []}
+
+
+# ─────────────────────────────── 3.3 apropiación: AA + evidencia + sub-evidencias ───────────────────────────────
+def saberes_sueltos(aa: dict, umbral: float = 0.12) -> list:
+    """Saberes del RAP de la AA que casi no tienen relación con la actividad ni con su evidencia:
+    candidatos a sub-evidencia (recomendación de los capacitadores SENA)."""
+    base = _palabras(aa.get("actividad", "") + " " + aa.get("evidencia", ""))
+    sueltos = []
+    for x in aa.get("saberes") or []:
+        w = _palabras(x)
+        af = len(w & base) / math.sqrt(len(w) * len(base)) if w and base else 0
+        if af < umbral:
+            sueltos.append(x)
+    return sueltos
+
+
+def subevidencia_plantilla(saberes: list) -> str:
+    temas = "; ".join(x.rstrip(". ").capitalize() for x in saberes[:4])
+    return (f"Evidencia de conocimiento: elaborar una ficha explicativa o mapa conceptual sobre: {temas}, "
+            "con un ejemplo aplicado al proyecto formativo.")
+
+
+def descripcion_evidencia_plantilla(aa: dict) -> str:
+    return ("Desarrolle la actividad en equipo y, al finalizar, entregue lo solicitado en la evidencia: "
+            "documento o soporte organizado, con portada, desarrollo y conclusiones, relacionado con el "
+            "proyecto formativo. Socialice los resultados y atienda la retroalimentación del instructor.")
+
+
+def numerar_subs(i: int, subs: list) -> list:
+    """[(numero, texto, saberes)] → '3.3.{i}.{j}'."""
+    return [(f"3.3.{i}.{j}", s.get("texto", "").strip(), s.get("saberes") or [])
+            for j, s in enumerate([x for x in subs if str(x.get("texto", "")).strip()], 1)]
+
+
+def _con_numero(texto: str, numero: str) -> str:
+    """'Evidencia de conocimiento: X' → 'Evidencia de conocimiento (3.3.1.1): X' (o la prefija)."""
+    m = re.match(r"\s*(evidencias?\s+de\s+(?:conocimiento|desempe[nñ]o|producto))\s*[:.\-–]?\s*", texto, re.I)
+    if m:
+        return f"{m.group(1)} ({numero}): {texto[m.end():].strip()}"
+    return f"Evidencia de conocimiento ({numero}): {texto.strip()}"
+
+
+def evidencia_completa(aa: dict, i: int, subs: list) -> str:
+    """Evidencia de la AA (planeación, tal cual) + sus sub-evidencias numeradas."""
+    lineas = [aa.get("evidencia", "").strip()]
+    lineas += [_con_numero(t, n) for n, t, _ in numerar_subs(i, subs)]
+    return "\n".join(x for x in lineas if x)
+
+
+def apropiacion_texto(aas: list, detalle: dict) -> str:
+    """Descripción de 3.3: 3.3.1, 3.3.2… = AA de la planeación tal cual + evidencia +
+    descripción de la evidencia + sub-evidencias."""
+    bloques = []
+    for i, aa in enumerate(aas, 1):
+        d = detalle.get(i - 1, {}) if isinstance(detalle, dict) else {}
+        lineas = [f"**3.3.{i}** {aa.get('actividad', '').strip()}"]
+        if aa.get("evidencia"):
+            lineas.append(f"**Evidencia:** {aa['evidencia'].strip()}")
+        desc = str(d.get("desc_evidencia", "") or "").strip() or descripcion_evidencia_plantilla(aa)
+        lineas.append(f"**Descripción de la evidencia:** {desc}")
+        for n, t, sab in numerar_subs(i, d.get("subs") or []):
+            lineas.append(f"**Sub-evidencia {n}:** {t}")
+        bloques.append("\n".join(lineas))
+    return "\n".join(bloques)
+
+
+def transferencia_evidencia_plantilla(tecnica: dict | None) -> str:
+    nombre = (tecnica or {}).get("name", "estudio de caso").lower()
+    return (f"Evidencia de producto: solución integradora ({nombre}) que demuestre lo aprendido en toda la "
+            "competencia, con la justificación de las decisiones tomadas.")
 
 
 # ─────────────────────────────── redacción sin IA (respaldo) ───────────────────────────────
@@ -223,8 +296,16 @@ def descripcion_plantilla(momento: str, tecnica: dict | None, bl: dict, aas: lis
                       f"su contexto se relacionan con «{bl['actividad_proyecto'][:90].lower()}»? "
                       "¿Qué le gustaría aprender para resolverlas?")
     elif momento == "3.2":
-        lineas.append("Identifique lo que ya sabe y lo que necesita aprender sobre los siguientes temas:")
-        lineas += [f"- {x}" for x in (bl["saberes_conceptos"][:5] or bl["raps"][:3])]
+        lineas.append(f"Antes de iniciar la competencia «{bl['competencia'].split(' - ', 1)[-1].strip().capitalize()}», "
+                      "identifique lo que ya sabe y lo que necesita aprender. Responda individualmente y "
+                      "socialice en equipo:")
+        lineas.append("- ¿Qué entiende por esta competencia y para qué le sirve en su proyecto formativo?")
+        lineas += [f"- ¿Qué sabe sobre: {r.split(' - ', 1)[-1].strip().rstrip('.').lower()}?" for r in bl["raps"][:4]]
+    elif momento == "3.4":
+        lineas.append("Actividad integradora: resuelva en equipo la situación planteada por el instructor, "
+                      "aplicando lo aprendido en TODA la competencia:")
+        lineas += [f"- {r.split(' - ', 1)[-1].strip().rstrip('.').capitalize()}." for r in bl["raps"]]
+        lineas.append("Justifique cada decisión, verifique los resultados y presente la solución en plenaria.")
     else:
         lineas.append("Desarrolle las siguientes actividades de aprendizaje:")
         lineas += [f"- {x}" for x in dict.fromkeys(a["actividad"] for a in aas if a["actividad"])]
@@ -246,11 +327,25 @@ def presentacion_plantilla(plan: dict, bl: dict) -> str:
 # ─────────────────────────────── ensamblar la guía ───────────────────────────────
 def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "",
                      glosario: list | None = None, referentes: list | None = None,
-                     autor: dict | None = None) -> dict:
+                     autor: dict | None = None, apropiacion: dict | None = None,
+                     transferencia: dict | None = None) -> dict:
+    """`apropiacion` = {indice_AA: {"desc_evidencia", "subs": [{"texto", "saberes"}]}}
+    `transferencia` = {"evidencia", "criterios": [...]} (actividad integradora de 3.4)."""
     """`momentos[k]` = {"tecnicas": [técnica,...], "descripcion", "apoyo", "horas"} para k en 3.1–3.4.
     Devuelve el diccionario que espera generar_guia_aprendizaje (formato GFPI-F-135)."""
     autor = autor or {}
-    reparto = aas_por_momento(bl)
+    apropiacion = apropiacion or {}
+    transferencia = dict(transferencia or {})
+    if not transferencia.get("evidencia"):
+        t34 = (momentos.get("3.4", {}).get("tecnicas") or [None])[0]
+        transferencia["evidencia"] = transferencia_evidencia_plantilla(t34)
+    if not transferencia.get("criterios"):        # por defecto: el primer criterio de cada RAP
+        vistos = {}
+        for a in bl["aas"]:
+            c = [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]
+            if c and a["rap_idx"] not in vistos:
+                vistos[a["rap_idx"]] = c[0]
+        transferencia["criterios"] = list(dict.fromkeys(vistos.values()))
     actividades = {}
     for k in MOMENTOS:
         m = momentos.get(k, {})
@@ -263,18 +358,30 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
             "apoyo": m.get("apoyo", ""),
             "duracion": str(m.get("horas", "")),
         }
-        if k in ("3.3", "3.4"):
-            aas = reparto[k]
-            act["evidencias"] = "\n".join(dict.fromkeys(a["evidencia"] for a in aas if a["evidencia"]))
-            act["instrumentos"] = "\n".join(dict.fromkeys(
-                instrumento_para(a["evidencia"]) for a in aas if a["evidencia"]))
+        if k == "3.3":
+            act["descripcion"] = apropiacion_texto(bl["aas"], apropiacion)
+            evs = [evidencia_completa(a, i, apropiacion.get(i - 1, {}).get("subs") or [])
+                   for i, a in enumerate(bl["aas"], 1)]
+            act["evidencias"] = "\n".join(f"3.3.{i}: {e}" for i, e in enumerate(evs, 1) if e)
+            act["instrumentos"] = "\n".join(dict.fromkeys(instrumento_para(e) for e in evs if e))
+        if k == "3.4" and transferencia.get("evidencia"):
+            act["evidencias"] = transferencia["evidencia"]
+            act["instrumentos"] = instrumento_para(transferencia["evidencia"])
         actividades[k] = act
 
     tabla = [["Fase del proyecto formativo", "Actividad del proyecto formativo", "Actividad de Aprendizaje",
               "Evidencias de Aprendizaje", "Criterios de Evaluación", "Técnicas e Instrumentos de Evaluación"]]
-    for a in bl["aas"]:
+    evs_aa = []
+    for i, a in enumerate(bl["aas"], 1):
+        ev = evidencia_completa(a, i, apropiacion.get(i - 1, {}).get("subs") or [])
+        evs_aa.append(ev)
         tabla.append([a.get("fase") or bl["fase"], a.get("actividad_proyecto") or bl["actividad_proyecto"],
-                      a["actividad"], a["evidencia"], a["criterios"], instrumento_para(a["evidencia"])])
+                      f"3.3.{i} {a['actividad']}", ev, a["criterios"], instrumento_para(ev)])
+    tecs34 = "; ".join(t["name"] for t in (momentos.get("3.4", {}).get("tecnicas") or []))
+    tabla.append([bl["fase"], bl["actividad_proyecto"],
+                  "3.4 Actividad de transferencia (integradora de la competencia)" + (f": {tecs34}" if tecs34 else ""),
+                  transferencia["evidencia"], "\n".join(transferencia["criterios"]),
+                  instrumento_para(transferencia["evidencia"])])
 
     refs = list(referentes or [])
     usadas = any(m.get("tecnicas") for m in momentos.values())
@@ -294,12 +401,19 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
         "autor_dependencia": autor.get("dependencia", ""), "autor_fecha": autor.get("fecha", ""),
         # trazabilidad (no va al formato): para instrumentos y portafolio
         # evidencias detalladas: de aquí salen los instrumentos de evaluación
-        "_evidencias": [{"momento": " y ".join(k for k in ("3.3", "3.4") if any(a is x for x in reparto[k])),
+        "_evidencias": [{"momento": f"3.3.{i}",
                          "fase": a.get("fase") or bl["fase"],
                          "actividad_proyecto": a.get("actividad_proyecto") or bl["actividad_proyecto"],
-                         "rap": a["rap"], "actividad": a["actividad"], "evidencia": a["evidencia"],
+                         "rap": a["rap"], "actividad": a["actividad"], "evidencia": evs_aa[i - 1],
+                         "saberes": a.get("saberes", []),
+                         "sub_saberes": {n: sab for n, _, sab in
+                                         numerar_subs(i, apropiacion.get(i - 1, {}).get("subs") or [])},
                          "criterios": [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]}
-                        for a in bl["aas"]],
+                        for i, a in enumerate(bl["aas"], 1)] + [{
+                         "momento": "3.4", "integradora": True, "fase": bl["fase"],
+                         "actividad_proyecto": bl["actividad_proyecto"], "rap": "; ".join(bl["raps"]),
+                         "actividad": "Actividad de transferencia (integradora)" + (f": {tecs34}" if tecs34 else ""),
+                         "evidencia": transferencia["evidencia"], "criterios": transferencia["criterios"]}],
         "_regional_centro": plan.get("regional_centro", ""),
         "_saberes": list(bl.get("saberes_conceptos", [])) + list(bl.get("saberes_proceso", [])),
         "_origen": {"planeacion": plan.get("_id", ""), "bloque": bl["indice"],

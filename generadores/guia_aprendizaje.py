@@ -132,6 +132,14 @@ def _eliminar(p: Paragraph):
 ES_VINETA = re.compile(r"^\s*(?:[-•*▪►✓]|\d+[.)])\s+")
 
 
+def _run_marcado(p: Paragraph, texto: str, rpr):
+    """Escribe `texto` respetando **negrita** (solo para títulos 3.3.1, 3.3.2…; misma fuente y tamaño)."""
+    partes = texto.split("**")
+    for k, parte in enumerate(partes):
+        if parte:
+            _run(p, parte, rpr, negrita=True if k % 2 == 1 else None)
+
+
 def _escribir_valor(etiqueta: Paragraph, valor, parrafo_vineta: Paragraph | None) -> Paragraph:
     """Escribe `valor` detrás del rótulo. Línea 1 en el mismo párrafo; las siguientes en
     párrafos clonados (con viñeta real de Word si la línea empieza con -, •, 1., …).
@@ -146,17 +154,17 @@ def _escribir_valor(etiqueta: Paragraph, valor, parrafo_vineta: Paragraph | None
     ultimo = etiqueta
     for k, linea in enumerate(lineas):
         if k == 0 and not ES_VINETA.match(linea):
-            _run(etiqueta, linea.strip(), rpr)
+            _run_marcado(etiqueta, linea.strip(), rpr)
             continue
         if not linea.strip():
             continue
         if ES_VINETA.match(linea) and parrafo_vineta is not None:
             p = _clonar_despues(ultimo, parrafo_vineta)
-            _run(p, ES_VINETA.sub("", linea).strip(), rpr)
+            _run_marcado(p, ES_VINETA.sub("", linea).strip(), rpr)
         else:
             p = _clonar_despues(ultimo, etiqueta)
             _quitar_numeracion(p)
-            _run(p, linea.strip(), rpr)
+            _run_marcado(p, linea.strip(), rpr)
         ultimo = p
     return ultimo
 

@@ -49,7 +49,7 @@ def _norm(t: str) -> str:
 
 
 # ─────────────────────────────── evidencias de la guía ───────────────────────────────
-_RE_TIPO = re.compile(r"evidencias?\s+de\s+(conocimiento|desempe[nñ]o|producto)\s*[:.\-–]?\s*", re.I)
+_RE_TIPO = re.compile(r"evidencias?\s+de\s+(conocimiento|desempe[nñ]o|producto)\s*(?:\(([\d.]+)\))?\s*[:.\-–]?\s*", re.I)
 
 
 def tipo_evidencia(texto: str) -> str:
@@ -62,7 +62,9 @@ def tipo_evidencia(texto: str) -> str:
 
 
 def partir_evidencia(texto: str) -> list[tuple[str, str]]:
-    """'Evidencia de conocimiento: X. Evidencia de producto: Y' → [(conocimiento, X), (producto, Y)]."""
+    """'Evidencia de conocimiento: X. Evidencia de producto: Y' → [(conocimiento, X), (producto, Y)].
+    Las sub-evidencias numeradas ('Evidencia de conocimiento (3.3.1.1): X') conservan su número
+    al inicio del texto: '(3.3.1.1) X'."""
     texto = str(texto or "").strip()
     marcas = list(_RE_TIPO.finditer(texto))
     if not marcas:
@@ -71,6 +73,8 @@ def partir_evidencia(texto: str) -> list[tuple[str, str]]:
     for i, m in enumerate(marcas):
         fin = marcas[i + 1].start() if i + 1 < len(marcas) else len(texto)
         cuerpo = texto[m.end():fin].strip(" .;\n")
+        if cuerpo and m.group(2):
+            cuerpo = f"({m.group(2)}) {cuerpo}"
         if cuerpo:
             salida.append(("desempeno" if _norm(m.group(1)).startswith("desempe") else _norm(m.group(1)), cuerpo))
     return salida
@@ -116,8 +120,11 @@ def evidencias_de_guia(guia: dict) -> list[dict]:
     items = []
     for n_aa, e in enumerate(base):
         for tipo, txt in partir_evidencia(e.get("evidencia", "")):
+            sub = re.match(r"\((\d[\d.]*)\)\s*", txt)
             items.append({
-                "id": len(items), "aa": n_aa, "momento": e.get("momento", ""), "tipo": tipo, "evidencia": txt,
+                "id": len(items), "aa": n_aa, "integradora": bool(e.get("integradora")),
+                "momento": sub.group(1) if sub else e.get("momento", ""), "tipo": tipo, "evidencia": txt,
+                "saberes": ((e.get("sub_saberes") or {}).get(sub.group(1)) if sub else None) or e.get("saberes") or [],
                 "fase": e.get("fase", ""), "actividad_proyecto": e.get("actividad_proyecto", ""),
                 "rap": e.get("rap", ""), "actividad": e.get("actividad", ""),
                 "criterios": _criterios_lista(e.get("criterios")),
@@ -170,7 +177,7 @@ def contenido_base(item: dict, instrumento: str, saberes: list[str]) -> list[dic
     if instrumento == "rubrica":
         return rubrica_base(item)
     if instrumento == "cuestionario":
-        return cuestionario_base(item, saberes)
+        return cuestionario_base(item, item.get("saberes") or saberes)
     return lista_base(item)
 
 

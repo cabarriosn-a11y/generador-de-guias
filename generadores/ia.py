@@ -671,6 +671,18 @@ Responde ÚNICAMENTE con JSON válido, sin markdown:
             f"Ejemplo orientador (adáptalo, no lo copies): {t['example']} Evidencia orientadora: {t['evidence']}"
             for t in tecnicas) or "- (sin técnica elegida: propón una activa coherente con el propósito)"
         bloque_aa = "\n".join(f"- {a['actividad']} → Evidencia: {a['evidencia']}" for a in aas if a.get("actividad"))
+        extra_momento, palabras, campo_ev = "", "80-160", ""
+        if momento == "3.2":
+            extra_momento = ("ESTE MOMENTO ES GENERAL: enmarca el concepto global de TODA la competencia y de sus "
+                             "RAP (no de una actividad puntual). Indaga saberes previos con preguntas abiertas.")
+        elif momento == "3.4":
+            extra_momento = ("ESTE MOMENTO ES UNA ACTIVIDAD INTEGRADORA DEL APRENDIZ: plantea una situación nueva y "
+                             "concreta del contexto del programa (p. ej. un estudio de caso con datos) que obligue a "
+                             "aplicar TODOS los RAP listados; el aprendiz debe demostrar lo aprendido en toda la "
+                             "competencia, justificar decisiones y entregar una evidencia de producto.")
+            palabras = "140-260"
+            campo_ev = (',\n  "evidencia": "Evidencia de producto: <qué entrega el aprendiz como resultado de la '
+                        'actividad integradora, en una frase>"')
         prompt = f"""Redacta el momento {momento} «{nombre_momento}» de una GUÍA DE APRENDIZAJE SENA (GFPI-F-135).
 
 PROPÓSITO DEL MOMENTO (GFPI-G-060): {proposito}
@@ -687,9 +699,10 @@ DATOS DE LA PLANEACIÓN (no los cambies):
 TÉCNICA(S) DIDÁCTICA(S) ELEGIDA(S) POR EL INSTRUCTOR (Atlas didáctico, UnADM):
 {bloque_tec}
 
+{extra_momento}
 Responde ÚNICAMENTE con JSON válido, sin markdown:
-{{"descripcion": "Consigna dirigida al aprendiz en pasos numerados (1., 2., 3. ...), 80-160 palabras, que aplica la técnica elegida al contexto del programa y del proyecto; indica si el trabajo es individual o en equipo y qué entrega.",
-  "apoyo": "Material de apoyo (lecturas, ejemplos, formatos o casos) en una línea."}}
+{{"descripcion": "Consigna dirigida al aprendiz en pasos numerados (1., 2., 3. ...), {palabras} palabras, que aplica la técnica elegida al contexto del programa y del proyecto; indica si el trabajo es individual o en equipo y qué entrega.",
+  "apoyo": "Material de apoyo (lecturas, ejemplos, formatos o casos) en una línea."{campo_ev}}}
 
 REGLAS:
 1. Usa SOLO el contexto del programa y del proyecto formativo; no nombres empresas que no aparezcan ahí y no inventes empresas.
@@ -713,7 +726,29 @@ REGLAS:
             except Exception:
                 pass
         return {"descripcion": str(res.get("descripcion", "")).strip(),
-                "apoyo": str(res.get("apoyo", "")).strip()}
+                "apoyo": str(res.get("apoyo", "")).strip(),
+                "evidencia": str(res.get("evidencia", "")).strip()}
+
+    def describir_evidencia(self, aa: dict, ctx: dict, tecnicas: list, instrucciones_extra: str = "") -> str:
+        """3.3.x: 'Descripción de la evidencia' de una AA (qué hace y qué entrega el aprendiz).
+        La AA y la evidencia vienen de la planeación y NO se cambian."""
+        tec = "; ".join(f"{t['name']}: {t['description']}" for t in tecnicas) or "(libre, activa)"
+        prompt = f"""Redacta la DESCRIPCIÓN DE LA EVIDENCIA para una actividad de aprendizaje de una guía SENA (momento 3.3 Apropiación).
+
+- Programa: {ctx.get('programa', '')}
+- Proyecto formativo: {ctx.get('proyecto_formativo', '')}
+- Competencia: {ctx.get('competencia', '')}
+- Resultado de aprendizaje: {aa.get('rap', '')}
+- Actividad de aprendizaje (planeación, NO la cambies): {aa.get('actividad', '')}
+- Evidencia (planeación, NO la cambies): {aa.get('evidencia', '')}
+- Saberes del diseño curricular para este RAP: {"; ".join((aa.get('saberes') or [])[:12])}
+- Técnica didáctica elegida: {tec}
+
+Responde ÚNICAMENTE con JSON: {{"descripcion": "60-130 palabras dirigidas al aprendiz: cómo desarrollar la actividad con la técnica, qué debe contener la evidencia (partes, formato, extensión), si es individual o en equipo y cómo se socializa."}}
+REGLAS: no inventes otras evidencias; usa solo el contexto del programa y del proyecto; no nombres empresas que no aparezcan ahí; nada de software como requisito."""
+        prompt = self._aplicar_extra(prompt, instrucciones_extra)
+        res = self._parsear_json(self._llamar(prompt))
+        return str(res.get("descripcion", "") if isinstance(res, dict) else res).strip()
 
     # ---------- Instrumentos de evaluación desde la guía ----------
     def generar_instrumento(self, tipo: str, item: dict, ctx: dict, n_preguntas: int = 8,
@@ -733,7 +768,7 @@ REGLAS:
 - Criterios de evaluación del diseño curricular (numerados):
 {lista_c}"""
         if tipo == "cuestionario":
-            saberes = "; ".join((ctx.get("saberes") or [])[:20])
+            saberes = "; ".join((item.get("saberes") or ctx.get("saberes") or [])[:20])
             formato = (f'{{"preguntas": [{{"criterio": <número del criterio que evalúa>, "enunciado": "...", "a": "...", "b": "...", "c": "...", "d": "...", '
                        f'"correcta": "a|b|c|d", "justificacion": "por qué es la correcta"}}]}}  '
                        f"→ exactamente {n_preguntas} preguntas de selección múltiple con única respuesta, "
