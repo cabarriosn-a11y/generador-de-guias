@@ -55,7 +55,7 @@ from generadores.plan_trabajo import (
 )
 from generadores.excel_portafolio import generar_excel_portafolio
 from generadores.email_sender import (
-    enviar_correo, probar_conexion, plantilla_correo_plan_trabajo
+    enviar_correo, probar_conexion, plantilla_correo_plan_trabajo, ENLACE_DOCUMENTOS_DEFECTO,
 )
 from generadores.planeacion_pedagogica import (
     generar_planeacion, validar_planeacion, resumen_horas,
@@ -1427,6 +1427,19 @@ def _tab_generar_enviar():
                     disabled=not correo_configurado if False else False)
 
     enviar = modo.startswith("📄+✉️")        # ojo: «Solo generar…» también contiene la palabra «enviar»
+    if enviar:
+        enlace = st.text_input("🔗 Página donde el aprendiz descarga la guía, la planeación y los instrumentos",
+                               value=cfg.get("enlace_documentos") or ENLACE_DOCUMENTOS_DEFECTO,
+                               key="plan_enlace_docs")
+        if enlace.strip() and enlace.strip() != cfg.get("enlace_documentos"):
+            cfg["enlace_documentos"] = enlace.strip()
+            guardar_config(cfg)
+        with st.expander("👁️ Vista previa del correo"):
+            st.markdown(plantilla_correo_plan_trabajo(
+                "NOMBRE DEL APRENDIZ", cfg.get("smtp_nombre") or "Instructor",
+                guia.get("programa", ""), guia.get("competencia", ""),
+                len(st.session_state.get("plan_cronograma") or []) or None,
+                cfg.get("enlace_documentos") or ENLACE_DOCUMENTOS_DEFECTO), unsafe_allow_html=True)
     if enviar and not correo_configurado:
         st.error("No puedes enviar sin configurar el correo primero.")
         return
@@ -1504,7 +1517,9 @@ def _procesar_planes(aprendices, guia, actividades, fecha_inicio, fecha_final, e
                 try:
                     cuerpo = plantilla_correo_plan_trabajo(
                         nombre_completo, instructor["nombre"],
-                        datos_guia["programa"], datos_guia["competencia"]
+                        datos_guia["programa"] or apr.get("programa", ""), datos_guia["competencia"],
+                        n_actividades=len(cronograma),
+                        enlace=cfg.get("enlace_documentos") or ENLACE_DOCUMENTOS_DEFECTO,
                     )
                     enviar_correo(
                         remitente=cfg["smtp_remitente"],

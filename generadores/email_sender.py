@@ -89,29 +89,39 @@ def probar_conexion(remitente: str, contrasena_app: str,
         return False, f"Error de conexión: {e}"
 
 
+ENLACE_DOCUMENTOS_DEFECTO = "https://app-documental-sena-7xoz4p5accdhnt8jtqc96t.streamlit.app"
+
+
 def plantilla_correo_plan_trabajo(nombre_aprendiz: str, nombre_instructor: str,
-                                   programa: str, competencia: str) -> str:
-    """Devuelve el cuerpo HTML del correo con el plan de trabajo adjunto."""
+                                   programa: str, competencia: str,
+                                   n_actividades: int | None = None,
+                                   enlace: str = ENLACE_DOCUMENTOS_DEFECTO) -> str:
+    """Cuerpo HTML del correo con el plan de trabajo adjunto. El aprendiz NO lo reenvía: organiza
+    su portafolio de la competencia y descarga los demás documentos en la página del instructor."""
+    prog = f" del programa <i>{programa}</i>," if programa else ""
+    acts = (f"las {n_actividades} actividades de aprendizaje" if n_actividades
+            else "las actividades de aprendizaje")
     return f"""
     <html>
       <body style="font-family: Arial, sans-serif; color: #2C2C2C; line-height: 1.5;">
         <p>Apreciado(a) <b>{nombre_aprendiz}</b>,</p>
 
-        <p>Espero se encuentre muy bien. Le adjunto en este correo su
-        <b>Plan de Trabajo Individual</b> correspondiente al programa
-        <i>{programa}</i>, competencia <i>{competencia}</i>.</p>
+        <p>Espero se encuentre muy bien. Le adjunto su <b>Plan de Trabajo Individual</b>{prog}
+        competencia <i>{competencia}</i>, con el cronograma de {acts} de la guía, las fechas de
+        inicio y entrega de cada una y un espacio para registrar el estado de entrega.</p>
 
-        <p>En el documento encontrará:</p>
+        <p><b>No es necesario reenviar este plan.</b> Guárdelo y organice con él el
+        <b>portafolio de evidencias de la competencia</b>.</p>
+
+        <p>Descargue los demás documentos de la competencia en la página:<br>
+        <a href="{enlace}" style="color:#39A900; font-weight:bold;">{enlace}</a></p>
         <ul>
-          <li>El cronograma de las 4 actividades a desarrollar</li>
-          <li>Las fechas de inicio y entrega de cada actividad</li>
-          <li>Un espacio para registrar el estado de entrega</li>
+          <li>Guía de aprendizaje</li>
+          <li>Planeación pedagógica</li>
+          <li>Instrumentos de evaluación</li>
         </ul>
 
-        <p>Le solicito revisarlo con atención, firmarlo y devolverlo por este
-        mismo medio para constancia. Cualquier duda me la puede consultar
-        directamente.</p>
-
+        <p>Cualquier duda me la puede consultar directamente.</p>
         <p>Éxitos en su proceso de formación.</p>
 
         <p>Cordialmente,<br>
@@ -120,7 +130,7 @@ def plantilla_correo_plan_trabajo(nombre_aprendiz: str, nombre_instructor: str,
 
         <hr style="border: none; border-top: 1px solid #D0D0D0; margin: 20px 0;">
         <p style="font-size: 11px; color: #888;">
-          Este correo fue enviado desde el sistema Generador de Guías SENA.
+          LogiLab SENA · By Carlos Barrios · Instructor
         </p>
       </body>
     </html>
