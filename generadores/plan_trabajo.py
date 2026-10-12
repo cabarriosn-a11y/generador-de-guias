@@ -122,6 +122,58 @@ def calcular_cronograma_por_rango(actividades: dict, fecha_inicio: date, fecha_f
     return resultado
 
 
+def _esc(t) -> str:
+    import html
+    return html.escape(str(t or ""), quote=False)
+
+
+def actividades_de_guia(guia: dict, incluir_transferencia: bool = True) -> list:
+    """Actividades de aprendizaje de una guía generada desde la planeación (3.3.1, 3.3.2… tal cual)
+    con su evidencia y sus horas; opcionalmente la actividad integradora 3.4."""
+    salida = []
+    for e in guia.get("_evidencias") or []:
+        if e.get("integradora") and not incluir_transferencia:
+            continue
+        num = e.get("momento", "")
+        salida.append({
+            "numero": num,
+            "titulo": (f"{num} Actividad de transferencia" if e.get("integradora")
+                       else f"{num} Actividad de aprendizaje"),
+            "descripcion": e.get("actividad", ""),
+            "evidencia": e.get("evidencia", ""),
+            "horas": float(e.get("horas") or 0),
+        })
+    return salida
+
+
+def cronograma_desde_guia(actividades: list, fecha_inicio: date, fecha_final: date,
+                          modo: str = "horas") -> list:
+    """Fechas para cada actividad de aprendizaje dentro del rango.
+    modo 'horas': una tras otra, con días hábiles proporcionales a las horas de cada AA.
+    modo 'rango': todas con el mismo inicio y la misma entrega."""
+    dias = []
+    d = fecha_inicio
+    while d <= fecha_final:
+        if d.weekday() < 5:
+            dias.append(d)
+        d += timedelta(days=1)
+    n = len(actividades)
+    if modo == "rango" or not dias or len(dias) < n:
+        return [{**a, "fecha_inicio": fecha_inicio, "fecha_entrega": fecha_final} for a in actividades]
+    pesos = [max(a.get("horas") or 0, 1) for a in actividades]
+    libres, tot = len(dias) - n, sum(pesos)
+    extra = [libres * p / tot for p in pesos]
+    asign = [1 + int(x) for x in extra]
+    resto = len(dias) - sum(asign)
+    for k in sorted(range(n), key=lambda k: -(extra[k] - int(extra[k])))[:resto]:
+        asign[k] += 1
+    salida, pos = [], 0
+    for a, c in zip(actividades, asign):
+        salida.append({**a, "fecha_inicio": dias[pos], "fecha_entrega": dias[pos + c - 1]})
+        pos += c
+    return salida
+
+
 def contar_dias_habiles(inicio: date, fin: date) -> int:
     """Cuenta los días hábiles (lunes a viernes) entre dos fechas, inclusive."""
     if fin < inicio:
@@ -210,10 +262,11 @@ def generar_plan_trabajo(datos_aprendiz: dict, datos_guia: dict, cronograma: lis
 
     # ---- Competencia y proyecto ----
     story.append(Paragraph("<b>2. Competencia y Proyecto</b>", st_seccion))
+    st_val = ParagraphStyle("val", parent=styles["Normal"], fontSize=9, textColor=DARK, leading=11)
     tabla_comp = Table([
-        ["Competencia:", datos_guia.get("competencia", "")],
-        ["Proyecto formativo:", datos_guia.get("proyecto_formativo", "")],
-        ["Fase:", datos_guia.get("fase_proyecto", "")],
+        ["Competencia:", Paragraph(_esc(datos_guia.get("competencia", "")), st_val)],
+        ["Proyecto formativo:", Paragraph(_esc(datos_guia.get("proyecto_formativo", "")), st_val)],
+        ["Fase:", Paragraph(_esc(datos_guia.get("fase_proyecto", "")), st_val)],
     ], colWidths=[5*cm, 12*cm])
     tabla_comp.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -233,9 +286,24 @@ def generar_plan_trabajo(datos_aprendiz: dict, datos_guia: dict, cronograma: lis
     story.append(Paragraph("<b>3. Cronograma de Actividades</b>", st_seccion))
     st_cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8.5,
                              textColor=DARK, leading=11)
-    encabezados = ["Actividad", "Descripción", "Inicio", "Entrega", "Entregado"]
-    filas = [encabezados]
-    for act in cronograma:
+    con_evidencia = any(a.get("evidencia") for a in cronograma)
+    if con_evidencia:
+        # Plan enlazado a la guía: una fila por ACTIVIDAD DE APRENDIZAJE, con su evidencia
+        filas = [["Actividad de aprendizaje", "Evidencia", "Inicio", "Entrega", "Entregado"]]
+        for act in cronograma:
+            tit = f"<b>{act['titulo']}</b>" + (f" ({act['horas']:.0f} h)" if act.get("horas") else "")
+            filas.append([
+                Paragraph(f"{tit}<br/>{_esc(act['descripcion'])}", st_cell),
+                Paragraph(_esc(act.get("evidencia", "")).replace("\n", "<br/>"), st_cell),
+                act["fecha_inicio"].strftime("%d/%m/%Y"),
+                act["fecha_entrega"].strftime("%d/%m/%Y"),
+                CasillaVacia(size=14),
+            ])
+        anchos = [6.4*cm, 5.0*cm, 1.9*cm, 1.9*cm, 1.8*cm]
+    else:
+        filas = [["Actividad", "Descripción", "Inicio", "Entrega", "Entregado"]]
+        anchos = [3.5*cm, 6.5*cm, 2.2*cm, 2.2*cm, 2.2*cm]
+    for act in ([] if con_evidencia else cronograma):
         # Si no hay horas definidas (modo por rango de fechas), omitir "(X h)"
         titulo_display = f"<b>{act['titulo']}</b>"
         if act.get("horas", 0) > 0:
@@ -247,7 +315,7 @@ def generar_plan_trabajo(datos_aprendiz: dict, datos_guia: dict, cronograma: lis
             act["fecha_entrega"].strftime("%d/%m/%Y"),
             CasillaVacia(size=14),  # Casilla vacía para marcar cuando esté entregado
         ])
-    tabla_crono = Table(filas, colWidths=[3.5*cm, 6.5*cm, 2.2*cm, 2.2*cm, 2.2*cm])
+    tabla_crono = Table(filas, colWidths=anchos, repeatRows=1)
     tabla_crono.setStyle(TableStyle([
         # Encabezado
         ("BACKGROUND", (0, 0), (-1, 0), DARK),

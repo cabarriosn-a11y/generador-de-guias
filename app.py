@@ -14,7 +14,7 @@ import io
 import json
 import re
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -1206,6 +1206,18 @@ El Excel debe tener **una fila por aprendiz** con estas columnas:
 
 def _tab_guia_cronograma():
     st.subheader("Selecciona la guía y define el cronograma")
+    enlazadas = [(f, d) for f, d in _guias_con_trazabilidad() if d.get("_evidencias")]
+    if st.session_state.get("plan_guia_pend"):
+        st.session_state["plan_origen"] = "📗 Guía generada desde la planeación (recomendado)"
+    origen = st.radio("Guía de origen", ["📗 Guía generada desde la planeación (recomendado)",
+                                         "🆕 Guía antigua (Nueva guía)"],
+                      horizontal=True, key=_init_estado("plan_origen",
+                          "📗 Guía generada desde la planeación (recomendado)" if enlazadas
+                          else "🆕 Guía antigua (Nueva guía)"))
+    if origen.startswith("📗"):
+        _cronograma_desde_guia_enlazada(enlazadas)
+        return
+    st.session_state.pop("plan_cronograma", None)
 
     guias = cargar_guias_historial()
     if not guias:
@@ -1326,6 +1338,58 @@ def _tab_guia_cronograma():
     st.session_state.plan_modo_cronograma = "rango"
 
 
+def _cronograma_desde_guia_enlazada(enlazadas):
+    """Plan de trabajo ENLAZADO a la guía: una fila por actividad de aprendizaje (3.3.1, 3.3.2…)
+    tal cual quedó en la guía (que a su vez viene de la planeación), con su evidencia."""
+    from generadores.plan_trabajo import actividades_de_guia, cronograma_desde_guia
+    if not enlazadas:
+        st.warning("⚠️ Primero genera una guía en **📗 Guía desde la planeación**.")
+        return
+    rutas = [str(f) for f, _ in enlazadas]
+    datos = {str(f): d for f, d in enlazadas}
+    pre = st.session_state.pop("plan_guia_pend", None)
+    if pre in rutas:
+        st.session_state["plan_guia_sel"] = pre
+    if st.session_state.get("plan_guia_sel") not in rutas:
+        st.session_state["plan_guia_sel"] = rutas[0]
+    sel = st.selectbox("Guía de aprendizaje", rutas, key="plan_guia_sel",
+                       format_func=lambda r: f"{Path(r).stem} · {datos[r].get('fase_proyecto', '')[:30]}")
+    g = datos[sel]
+    st.session_state.plan_guia = {"programa": g.get("programa", ""), "competencia": g.get("competencia", ""),
+                                  "proyecto_formativo": g.get("proyecto_formativo", ""),
+                                  "fase": g.get("fase_proyecto", ""), "_json": sel}
+    st.markdown(f"**Competencia:** {g.get('competencia', '')}  \n**Fase:** {g.get('fase_proyecto', '')}")
+    incluir_34 = st.checkbox("Incluir la actividad de transferencia 3.4 (integradora)", value=True,
+                             key="plan_incl34")
+    acts = actividades_de_guia(g, incluir_34)
+
+    st.subheader("📅 Fechas del cronograma")
+    c1, c2 = st.columns(2)
+    fecha_inicio = c1.date_input("Fecha de inicio", key=_init_estado("plan_g_fi",
+                                 st.session_state.get("plan_fecha_inicio_val", date.today())))
+    fecha_final = c2.date_input("Fecha final (entrega)", key=_init_estado("plan_g_ff",
+                                st.session_state.get("plan_fecha_final_val", date.today() + timedelta(days=60))))
+    if fecha_final < fecha_inicio:
+        st.error("⚠️ La fecha final no puede ser anterior a la fecha de inicio.")
+        return
+    modo = st.radio("¿Cómo repartir las fechas?",
+                    ["Una tras otra, según las horas de cada actividad", "Todas con el mismo rango"],
+                    horizontal=True, key="plan_modo_fechas")
+    crono = cronograma_desde_guia(acts, fecha_inicio, fecha_final,
+                                  "rango" if modo.startswith("Todas") else "horas")
+    st.dataframe(pd.DataFrame([{
+        "Actividad de aprendizaje": f"{c['numero']} {c['descripcion'][:90]}",
+        "Evidencia": c["evidencia"][:90], "Horas": int(c["horas"]),
+        "Inicio": c["fecha_inicio"].strftime("%d/%m/%Y"), "Entrega": c["fecha_entrega"].strftime("%d/%m/%Y"),
+    } for c in crono]), use_container_width=True, hide_index=True)
+    st.caption(f"🔗 {len(crono)} actividad(es) tomadas de la guía, tal cual. "
+               f"{contar_dias_habiles(fecha_inicio, fecha_final)} días hábiles en el rango.")
+    st.session_state.plan_cronograma = crono
+    st.session_state.plan_fecha_inicio_val = fecha_inicio
+    st.session_state.plan_fecha_final_val = fecha_final
+    st.session_state.plan_modo_cronograma = "guia"
+
+
 def _tab_generar_enviar():
     st.subheader("Generar PDFs y enviar por correo")
 
@@ -1362,7 +1426,7 @@ def _tab_generar_enviar():
                      "📄+✉️ Generar PDFs y enviar automáticamente por correo"],
                     disabled=not correo_configurado if False else False)
 
-    enviar = "enviar" in modo
+    enviar = modo.startswith("📄+✉️")        # ojo: «Solo generar…» también contiene la palabra «enviar»
     if enviar and not correo_configurado:
         st.error("No puedes enviar sin configurar el correo primero.")
         return
@@ -1413,7 +1477,8 @@ def _procesar_planes(aprendices, guia, actividades, fecha_inicio, fecha_final, e
     log = []
 
     # Nuevo: cronograma por rango de fechas (todas las actividades misma fecha)
-    cronograma = calcular_cronograma_por_rango(actividades, fecha_inicio, fecha_final)
+    cronograma = st.session_state.get("plan_cronograma") or \
+        calcular_cronograma_por_rango(actividades, fecha_inicio, fecha_final)
 
     planes_generados = []
     total = len(aprendices)
@@ -3334,6 +3399,11 @@ def seccion_guia_desde_planeacion():
             if rj.exists():
                 st.download_button("💾 Respaldo de la guía (.json)", rj.read_bytes(), file_name=rj.name,
                                    mime="application/json", use_container_width=True)
+        if Path(ruta).with_suffix(".json").exists() and st.button(
+                "📅 Crear plan de trabajo de los aprendices con esta guía", use_container_width=True):
+            st.session_state["plan_guia_pend"] = str(Path(ruta).with_suffix(".json"))
+            st.session_state["nav_ir_a"] = "📋 Planes de Trabajo"
+            st.rerun()
         if Path(ruta).with_suffix(".json").exists() and st.button(
                 "📋 Crear instrumentos de evaluación con esta guía", use_container_width=True):
             st.session_state["ins_guia_pend"] = str(Path(ruta).with_suffix(".json"))

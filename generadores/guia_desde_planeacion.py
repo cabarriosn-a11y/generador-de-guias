@@ -449,11 +449,14 @@ def armar_datos_guia(plan: dict, bl: dict, momentos: dict, presentacion: str = "
                          "actividad_proyecto": a.get("actividad_proyecto") or bl["actividad_proyecto"],
                          "rap": a["rap"], "actividad": a["actividad"], "evidencia": evs_aa[i - 1],
                          "saberes": a.get("saberes", []),
+                         "horas": int(apropiacion.get(i - 1, {}).get("horas") or 0)
+                         or a["horas_directas"] + a["horas_independientes"],
                          "sub_saberes": {n: sab for n, _, sab in
                                          numerar_subs(i, apropiacion.get(i - 1, {}).get("subs") or [])},
                          "criterios": [x.strip() for x in re.split(r"\n\s*\n|\n", a["criterios"]) if x.strip()]}
                         for i, a in enumerate(bl["aas"], 1)] + [{
                          "momento": "3.4", "integradora": True, "fase": bl["fase"],
+                         "horas": int(momentos.get("3.4", {}).get("horas") or 0),
                          "actividad_proyecto": bl["actividad_proyecto"], "rap": "; ".join(bl["raps"]),
                          "actividad": "Actividad de transferencia (integradora)" + (f": {tecs34}" if tecs34 else ""),
                          "evidencia": transferencia["evidencia"], "criterios": transferencia["criterios"]}],
